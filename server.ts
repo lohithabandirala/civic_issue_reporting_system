@@ -158,8 +158,14 @@ app.post('/api/register', async (req, res) => {
     const token = jwt.sign({ id, username, email, role }, JWT_SECRET);
     
     res.json({ token, user: { id, username, email, role, reputationPoints: 0, badges: [] } });
-  } catch (err) {
-    res.status(400).json({ error: 'User already exists' });
+  } catch (err: any) {
+    console.error('Registration Error:', err);
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern || {})[0];
+      res.status(400).json({ error: `${field.charAt(0).toUpperCase() + field.slice(1)} already exists` });
+    } else {
+      res.status(500).json({ error: err.message || 'Internal server error during registration' });
+    }
   }
 });
 
