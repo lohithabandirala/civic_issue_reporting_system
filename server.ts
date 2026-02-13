@@ -3,7 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import Database from 'better-sqlite3';
+import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
@@ -14,66 +14,93 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database('civic.db');
 const JWT_SECRET = process.env.JWT_SECRET || 'civic-connect-secret-key-2026';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/civic_issue';
 
 // Initialize Database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE,
-    email TEXT UNIQUE,
-    password TEXT,
-    locationAddress TEXT,
-    latitude REAL,
-    longitude REAL,
-    reputationPoints INTEGER DEFAULT 0,
-    badges TEXT DEFAULT '[]',
-    role TEXT DEFAULT 'citizen',
-    reportedIssuesCount INTEGER DEFAULT 0,
-    isBlocked INTEGER DEFAULT 0
-  );
+mongoose.connect(MONGODB_URI).then(async () => {
+  console.log('Connected to MongoDB');
+  
+  // Seed some worker teams
+  const count = await WorkerTeam.countDocuments();
+  if (count === 0) {
+    await WorkerTeam.insertMany([
+      { id: 'team-001', name: 'Sanitation Alpha', members: ["John Doe", "Jane Smith"] },
+      { id: 'team-002', name: 'Road Repair Delta', members: ["Mike Ross", "Harvey Specter"] },
+      { id: 'team-003', name: 'Drainage Specialists', members: ["Ross Geller", "Chandler Bing"] }
+    ]);
+  }
+}).catch(err => console.error('MongoDB connection error:', err));
 
-  CREATE TABLE IF NOT EXISTS issues (
-    id TEXT PRIMARY KEY,
-    userId TEXT,
-    username TEXT,
-    category TEXT,
-    description TEXT,
-    imageUrl TEXT,
-    locationAddress TEXT,
-    latitude REAL,
-    longitude REAL,
-    priority TEXT,
-    status TEXT,
-    timestamp TEXT,
-    upvotes INTEGER DEFAULT 0,
-    votedBy TEXT DEFAULT '[]',
-    voteCountResolved INTEGER DEFAULT 0,
-    voteCountNotResolved INTEGER DEFAULT 0,
-    citizenVerification TEXT,
-    communityVotes TEXT DEFAULT '[]',
-    assignedTeam TEXT,
-    workerImageUrl TEXT,
-    resolutionImage TEXT,
-    adminNotes TEXT,
-    isFake INTEGER DEFAULT 0,
-    resolvedAt TEXT
-  );
+const userSchema = new mongoose.Schema({
+  id: { type: String, unique: true },
+  username: { type: String, unique: true },
+  email: { type: String, unique: true },
+  password: { type: String },
+  locationAddress: { type: String },
+  latitude: { type: Number },
+  longitude: { type: Number },
+  reputationPoints: { type: Number, default: 0 },
+  badges: { type: [String], default: [] },
+  role: { type: String, default: 'citizen' },
+  reportedIssuesCount: { type: Number, default: 0 },
+  isBlocked: { type: Number, default: 0 }
+});
 
-  CREATE TABLE IF NOT EXISTS worker_teams (
-    id TEXT PRIMARY KEY,
-    name TEXT,
-    members TEXT DEFAULT '[]',
-    activeTasks INTEGER DEFAULT 0
-  );
+const issueSchema = new mongoose.Schema({
+  id: { type: String, unique: true },
+  userId: { type: String },
+  username: { type: String },
+  category: { type: String },
+  description: { type: String },
+  imageUrl: { type: String },
+  locationAddress: { type: String },
+  latitude: { type: Number },
+  longitude: { type: Number },
+  priority: { type: String },
+  status: { type: String },
+  timestamp: { type: String },
+  upvotes: { type: Number, default: 0 },
+  votedBy: { type: [String], default: [] },
+  voteCountResolved: { type: Number, default: 0 },
+  voteCountNotResolved: { type: Number, default: 0 },
+  citizenVerification: { type: Object, default: null },
+  communityVotes: { type: [Object], default: [] },
+  assignedTeam: { type: String },
+  workerImageUrl: { type: String },
+  resolutionImage: { type: String },
+  adminNotes: { type: String },
+  isFake: { type: Number, default: 0 },
+  resolvedAt: { type: String },
+  proofImageUrl: { type: String },
+  isDuplicate: { type: Boolean, default: false },
+  duplicateOf: { type: String },
+  division: { type: String },
+  prabhag: { type: String },
+  userEmail: { type: String }
+});
 
-  -- Seed some worker teams
-  INSERT OR IGNORE INTO worker_teams (id, name, members) VALUES 
-  ('team-001', 'Sanitation Alpha', '["John Doe", "Jane Smith"]'),
-  ('team-002', 'Road Repair Delta', '["Mike Ross", "Harvey Specter"]'),
-  ('team-003', 'Drainage Specialists', '["Ross Geller", "Chandler Bing"]');
-`);
+const workerTeamSchema = new mongoose.Schema({
+  id: { type: String, unique: true },
+  name: { type: String },
+  members: { type: [String], default: [] },
+  activeTasks: { type: Number, default: 0 }
+});
+
+const voteSchema = new mongoose.Schema({
+  id: { type: String, unique: true },
+  issueId: { type: String },
+  userId: { type: String },
+  vote: { type: String },
+  comment: { type: String },
+  proofImage: { type: String },
+  timestamp: { type: String }
+});
+
+const User = mongoose.model('User', userSchema);
+const Issue = mongoose.model('Issue', issueSchema);
+const WorkerTeam = mongoose.model('WorkerTeam', workerTeamSchema);
+const Vote = mongoose.model('Vote', voteSchema);
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -158,14 +185,11 @@ app.post('/api/register', async (req, res) => {
   const id = Math.random().toString(36).substr(2, 9);
   const hashedPassword = await bcrypt.hash(password, 10);
   
-  // Default first user to admin for testing purposes
-  const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
-  const role = userCount.count === 0 ? 'admin' : 'citizen';
+  const userCount = await User.countDocuments();
+  const role = userCount === 0 ? 'admin' : 'citizen';
 
   try {
-    const stmt = db.prepare('INSERT INTO users (id, username, email, password, role) VALUES (?, ?, ?, ?, ?)');
-    stmt.run(id, username, email, hashedPassword, role);
-    
+    await User.create({ id, username, email, password: hashedPassword, role });
     const token = jwt.sign({ id, username, email, role }, JWT_SECRET);
     res.json({ token, user: { id, username, email, reputationPoints: 0, badges: [], role, reportedIssuesCount: 0 } });
   } catch (err: any) {
@@ -174,110 +198,130 @@ app.post('/api/register', async (req, res) => {
 });
 
 app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body; // Changed to username + password per requirement
+  const { username, password } = req.body;
   
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
+  const user = await User.findOne({ username }).lean();
   if (!user) return res.status(400).json({ error: 'User not found' });
   
   if (user.isBlocked) return res.status(403).json({ error: 'Your account has been blocked due to repeated false reports.' });
 
-  const validPassword = await bcrypt.compare(password, user.password);
+  const validPassword = await bcrypt.compare(password, user.password as string);
   if (!validPassword) return res.status(400).json({ error: 'Invalid password' });
 
   const token = jwt.sign({ id: user.id, username: user.username, email: user.email, role: user.role }, JWT_SECRET);
   
-  // Clean user object for response
-  const { password: _, ...userProfile } = user;
-  userProfile.badges = JSON.parse(userProfile.badges || '[]');
+  const { password: _, _id, __v, ...userProfile } = user as any;
   
   res.json({ token, user: userProfile });
 });
 
-app.get('/api/me', authenticateToken, (req: any, res) => {
+app.get('/api/me', authenticateToken, async (req: any, res) => {
   try {
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
+    const user = await User.findOne({ id: req.user.id }).lean();
     if (!user) return res.status(404).json({ error: 'User not found' });
     
-    const { password: _, ...userProfile } = user;
-    userProfile.badges = JSON.parse(userProfile.badges || '[]');
+    const { password: _, _id, __v, ...userProfile } = user as any;
     res.json(userProfile);
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.put('/api/user/location', authenticateToken, (req: any, res) => {
+app.put('/api/user/location', authenticateToken, async (req: any, res) => {
   const { locationAddress, latitude, longitude } = req.body;
-  const stmt = db.prepare('UPDATE users SET locationAddress = ?, latitude = ?, longitude = ? WHERE id = ?');
-  stmt.run(locationAddress, latitude, longitude, req.user.id);
+  await User.updateOne({ id: req.user.id }, { locationAddress, latitude, longitude });
   res.json({ success: true });
 });
 
 // --- Issue Routes ---
 
-app.get('/api/issues', authenticateToken, (req, res) => {
-  const issues = db.prepare('SELECT * FROM issues ORDER BY timestamp DESC').all() as any[];
-  const formattedIssues = issues.map(i => ({
-    ...i,
-    votedBy: JSON.parse(i.votedBy),
-    communityVotes: JSON.parse(i.communityVotes || '[]'),
-    citizenVerification: i.citizenVerification ? JSON.parse(i.citizenVerification) : null
-  }));
+app.get('/api/issues', authenticateToken, async (req, res) => {
+  const issues = await Issue.find().sort({ timestamp: -1 }).lean();
+  const formattedIssues = issues.map((i: any) => {
+    const { _id, __v, ...rest } = i;
+    return rest;
+  });
   res.json(formattedIssues);
 });
 
 // Alias for GET /allIssues
-app.get('/api/allIssues', authenticateToken, (req, res) => {
-  const issues = db.prepare('SELECT * FROM issues ORDER BY timestamp DESC').all() as any[];
-  const formattedIssues = issues.map(i => ({
-    ...i,
-    votedBy: JSON.parse(i.votedBy),
-    communityVotes: JSON.parse(i.communityVotes || '[]'),
-    citizenVerification: i.citizenVerification ? JSON.parse(i.citizenVerification) : null
-  }));
+app.get('/api/allIssues', authenticateToken, async (req, res) => {
+  const issues = await Issue.find().sort({ timestamp: -1 }).lean();
+  const formattedIssues = issues.map((i: any) => {
+    const { _id, __v, ...rest } = i;
+    return rest;
+  });
   res.json(formattedIssues);
 });
 
-app.get('/api/userIssues', authenticateToken, (req: any, res) => {
-  const issues = db.prepare('SELECT * FROM issues WHERE userId = ? ORDER BY timestamp DESC').all(req.user.id) as any[];
-  const formattedIssues = issues.map(i => ({
-    ...i,
-    votedBy: JSON.parse(i.votedBy),
-    communityVotes: JSON.parse(i.communityVotes || '[]'),
-    citizenVerification: i.citizenVerification ? JSON.parse(i.citizenVerification) : null
-  }));
+app.get('/api/userIssues', authenticateToken, async (req: any, res) => {
+  const issues = await Issue.find({ userId: req.user.id }).sort({ timestamp: -1 }).lean();
+  const formattedIssues = issues.map((i: any) => {
+    const { _id, __v, ...rest } = i;
+    return rest;
+  });
   res.json(formattedIssues);
 });
 
-app.post('/api/reportIssue', authenticateToken, (req: any, res) => {
+app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
   try {
-    const { category, description, imageUrl, locationAddress, latitude, longitude, priority } = req.body;
+    const { category, description, imageUrl, locationAddress, latitude, longitude, priority, division, prabhag } = req.body;
     const id = Math.random().toString(36).substr(2, 9);
     const timestamp = new Date().toISOString();
     
-    // Use provided priority if available, otherwise classify
+    // AI Pre-Processing: Severity Detection
     const finalPriority = priority || classifyPriority(category, description);
 
-    const stmt = db.prepare(`
-      INSERT INTO issues (id, userId, username, category, description, imageUrl, locationAddress, latitude, longitude, priority, status, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    stmt.run(id, req.user.id, req.user.username, category, description, imageUrl, locationAddress, latitude, longitude, finalPriority, 'Pending', timestamp);
-    
-    // Update reputation and counts
-    const user = db.prepare('SELECT badges, reportedIssuesCount FROM users WHERE id = ?').get(req.user.id) as any;
-    if (user) {
-      const badges = JSON.parse(user.badges || '[]');
-      if (!badges.includes('First Responder')) {
-        badges.push('First Responder');
+    // AI Pre-Processing: Duplicate Detection (within ~200m)
+    let isDuplicate = false;
+    let duplicateOf = undefined;
+    if (latitude && longitude) {
+      const duplicateRadius = 0.002;
+      const recentDuplicate = await Issue.findOne({
+        category,
+        latitude: { $gte: latitude - duplicateRadius, $lte: latitude + duplicateRadius },
+        longitude: { $gte: longitude - duplicateRadius, $lte: longitude + duplicateRadius },
+        status: { $in: ['Pending', 'Assigned', 'In Progress'] }
+      });
+      if (recentDuplicate) {
+        isDuplicate = true;
+        duplicateOf = recentDuplicate.id;
       }
+    }
+
+    // Intelligent Routing
+    let assignedTeam = undefined;
+    let initialStatus = 'Pending';
+    if (!isDuplicate) {
+      if (category === 'Sanitation') assignedTeam = 'team-001';
+      else if (category === 'Roads') assignedTeam = 'team-002';
+      else if (category === 'Drainage') assignedTeam = 'team-003';
       
-      db.prepare('UPDATE users SET reputationPoints = reputationPoints + 10, badges = ?, reportedIssuesCount = reportedIssuesCount + 1 WHERE id = ?')
-        .run(JSON.stringify(badges), req.user.id);
+      if (assignedTeam) {
+        initialStatus = 'Assigned';
+        // Increment active tasks for team
+        await WorkerTeam.updateOne({ id: assignedTeam }, { $inc: { activeTasks: 1 } });
+      }
+    }
+
+    await Issue.create({
+      id, userId: req.user.id, username: req.user.username, userEmail: req.user.email, category, description,
+      imageUrl, locationAddress, latitude, longitude, priority: finalPriority,
+      division, prabhag,
+      status: initialStatus, timestamp, assignedTeam, isDuplicate, duplicateOf
+    });
+    
+    const user = await User.findOne({ id: req.user.id });
+    if (user) {
+      if (!user.badges.includes('First Responder')) {
+        user.badges.push('First Responder');
+      }
+      user.reputationPoints += 10;
+      user.reportedIssuesCount += 1;
+      await user.save();
     }
     
-    res.json({ id, priority: finalPriority, status: 'Pending' });
+    res.json({ id, priority: finalPriority, status: initialStatus, isDuplicate, duplicateOf });
   } catch (err: any) {
     console.error(err);
     res.status(500).json({ error: 'Failed to report issue' });
@@ -289,140 +333,120 @@ app.post('/api/issues', authenticateToken, (req: any, res) => {
   res.redirect(307, '/api/reportIssue');
 });
 
-app.post('/api/setLocation', authenticateToken, (req: any, res) => {
+app.post('/api/setLocation', authenticateToken, async (req: any, res) => {
   const { locationAddress, latitude, longitude } = req.body;
-  const stmt = db.prepare('UPDATE users SET locationAddress = ?, latitude = ?, longitude = ? WHERE id = ?');
-  stmt.run(locationAddress, latitude, longitude, req.user.id);
+  await User.updateOne({ id: req.user.id }, { locationAddress, latitude, longitude });
   res.json({ success: true });
 });
 
 // --- Admin Routes ---
 
-app.get('/api/admin/issues', authenticateToken, isAdmin, (req, res) => {
+app.get('/api/admin/issues', authenticateToken, isAdmin, async (req, res) => {
   const { status, category } = req.query;
-  let query = 'SELECT * FROM issues';
-  const params: any[] = [];
+  const filter: any = {};
+  if (status) filter.status = status;
+  if (category) filter.category = category;
 
-  if (status || category) {
-    query += ' WHERE';
-    if (status) {
-      query += ' status = ?';
-      params.push(status);
-    }
-    if (category) {
-      if (status) query += ' AND';
-      query += ' category = ?';
-      params.push(category);
-    }
-  }
-
-  query += ' ORDER BY timestamp DESC';
-  const issues = db.prepare(query).all(...params) as any[];
-  const formattedIssues = issues.map(i => ({
-    ...i,
-    votedBy: JSON.parse(i.votedBy || '[]'),
-    communityVotes: JSON.parse(i.communityVotes || '[]'),
-    citizenVerification: i.citizenVerification ? JSON.parse(i.citizenVerification) : null
-  }));
+  const issues = await Issue.find(filter).sort({ timestamp: -1 }).lean();
+  const formattedIssues = issues.map((i: any) => {
+    const { _id, __v, ...rest } = i;
+    return rest;
+  });
   res.json(formattedIssues);
 });
 
-app.put('/api/admin/issues/:id', authenticateToken, isAdmin, (req: any, res) => {
+app.put('/api/admin/issues/:id', authenticateToken, isAdmin, async (req: any, res) => {
   const { status, assignedTeam, resolutionImage, adminNotes, isFake } = req.body;
   const issueId = req.params.id;
 
-  const updates: string[] = [];
-  const params: any[] = [];
+  const updates: any = {};
 
   if (status) {
-    updates.push('status = ?');
-    params.push(status);
     if (status === 'Resolved') {
-      updates.push('resolvedAt = ?');
-      params.push(new Date().toISOString());
+      updates.status = 'Pending Citizen Confirmation';
+      updates.resolvedAt = new Date().toISOString();
+    } else {
+      updates.status = status;
     }
   }
   if (assignedTeam) {
-    updates.push('assignedTeam = ?');
-    params.push(assignedTeam);
-    // Automatically update status to 'Assigned' if it was 'Pending' or not set
-    const currentStatus = db.prepare('SELECT status FROM issues WHERE id = ?').get(issueId) as any;
-    if (currentStatus?.status === 'Pending' || !currentStatus?.status) {
-      if (!status) { // Only if status wasn't explicitly changed in the same request
-        updates.push('status = ?');
-        params.push('Assigned');
-      }
+    updates.assignedTeam = assignedTeam;
+    const currentIssue = await Issue.findOne({ id: issueId });
+    if (currentIssue?.status === 'Pending' || !currentIssue?.status) {
+      if (!status) updates.status = 'Assigned';
     }
   }
-  if (resolutionImage) {
-    updates.push('resolutionImage = ?');
-    params.push(resolutionImage);
-  }
-  if (adminNotes) {
-    updates.push('adminNotes = ?');
-    params.push(adminNotes);
-  }
+  if (resolutionImage) updates.resolutionImage = resolutionImage;
+  if (adminNotes) updates.adminNotes = adminNotes;
   if (isFake !== undefined) {
-    updates.push('isFake = ?');
-    params.push(isFake ? 1 : 0);
-    
-    // If fake, potentially block user if they have multiple fakes
+    updates.isFake = isFake ? 1 : 0;
     if (isFake) {
-      const issue = db.prepare('SELECT userId FROM issues WHERE id = ?').get(issueId) as any;
-      const fakeCount = db.prepare('SELECT COUNT(*) as count FROM issues WHERE userId = ? AND isFake = 1').get(issue.userId) as any;
-      if (fakeCount.count >= 3) {
-        db.prepare('UPDATE users SET isBlocked = 1 WHERE id = ?').run(issue.userId);
+      const issue = await Issue.findOne({ id: issueId });
+      if (issue) {
+        const fakeCount = await Issue.countDocuments({ userId: issue.userId, isFake: 1 });
+        if (fakeCount >= 3) {
+          await User.updateOne({ id: issue.userId }, { isBlocked: 1 });
+        }
       }
     }
   }
 
-  if (updates.length === 0) return res.status(400).json({ error: 'No updates provided' });
+  if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No updates provided' });
 
-  params.push(issueId);
-  db.prepare(`UPDATE issues SET ${updates.join(', ')} WHERE id = ?`).run(params);
+  await Issue.updateOne({ id: issueId }, { $set: updates });
   res.json({ success: true });
 });
 
-app.get('/api/admin/teams', authenticateToken, isAdmin, (req, res) => {
-  const teams = db.prepare('SELECT * FROM worker_teams').all();
-  res.json(teams);
-});
-
-app.get('/api/admin/stats', authenticateToken, isAdmin, (req, res) => {
-  const totalIssues = db.prepare('SELECT COUNT(*) as count FROM issues').get() as any;
-  const resolvedIssues = db.prepare("SELECT COUNT(*) as count FROM issues WHERE status = 'Resolved' OR status = 'Confirmed Resolved'").get() as any;
-  const pendingIssues = db.prepare("SELECT COUNT(*) as count FROM issues WHERE status = 'Pending'").get() as any;
-  
-  const categoryStats = db.prepare('SELECT category, COUNT(*) as count FROM issues GROUP BY category').all();
-  
-  res.json({
-    total: totalIssues.count,
-    resolved: resolvedIssues.count,
-    pending: pendingIssues.count,
-    categories: categoryStats
+app.get('/api/admin/teams', authenticateToken, isAdmin, async (req, res) => {
+  const teams = await WorkerTeam.find().lean();
+  const formatted = teams.map((t: any) => {
+    const { _id, __v, ...rest } = t;
+    return rest;
   });
+  res.json(formatted);
 });
 
-app.get('/api/issueHeatmapData', authenticateToken, (req, res) => {
-  const points = db.prepare('SELECT latitude, longitude, priority FROM issues').all() as any[];
+app.get('/api/admin/stats', authenticateToken, isAdmin, async (req, res) => {
+  const total = await Issue.countDocuments();
+  const resolved = await Issue.countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
+  const pending = await Issue.countDocuments({ status: 'Pending' });
+  
+  const categoryStatsRaw = await Issue.aggregate([
+    { $group: { _id: "$category", count: { $sum: 1 } } }
+  ]);
+  const categories = categoryStatsRaw.map(c => ({ category: c._id, count: c.count }));
+  
+  res.json({ total, resolved, pending, categories });
+});
+
+app.get('/api/public/stats', async (req, res) => {
+  const total = await Issue.countDocuments();
+  const resolved = await Issue.countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
+  const inProgress = await Issue.countDocuments({ status: { $in: ['Assigned', 'In Progress'] } });
+  const pending = await Issue.countDocuments({ status: 'Pending' });
+  
+  res.json({ total, resolved, inProgress, pending });
+});
+
+app.get('/api/issueHeatmapData', authenticateToken, async (req, res) => {
+  const points = await Issue.find({}, { latitude: 1, longitude: 1, priority: 1, _id: 0 }).lean();
   res.json(points);
 });
 
-app.post('/api/issues/:id/upvote', authenticateToken, (req: any, res) => {
+app.post('/api/issues/:id/upvote', authenticateToken, async (req: any, res) => {
   const issueId = req.params.id;
-  const issue = db.prepare('SELECT * FROM issues WHERE id = ?').get(issueId) as any;
+  const issue = await Issue.findOne({ id: issueId });
   if (!issue) return res.status(404).json({ error: 'Issue not found' });
 
-  const votedBy = JSON.parse(issue.votedBy);
-  if (votedBy.includes(req.user.id)) {
+  if (issue.votedBy.includes(req.user.id)) {
     return res.status(400).json({ error: 'Already upvoted' });
   }
 
-  votedBy.push(req.user.id);
-  db.prepare('UPDATE issues SET upvotes = upvotes + 1, votedBy = ? WHERE id = ?').run(JSON.stringify(votedBy), issueId);
+  issue.votedBy.push(req.user.id);
+  issue.upvotes += 1;
+  await issue.save();
   
-  // Award points to the reporter (+2 for being helpful)
-  db.prepare('UPDATE users SET reputationPoints = reputationPoints + 2 WHERE id = ?').run(issue.userId);
+  await User.updateOne({ id: issue.userId }, { $inc: { reputationPoints: 2 } });
   
   res.json({ success: true });
 });
@@ -444,114 +468,100 @@ function deg2rad(deg: number) {
   return deg * (Math.PI / 180);
 }
 
-app.post('/api/votes', authenticateToken, (req: any, res) => {
+app.post('/api/votes', authenticateToken, async (req: any, res) => {
   const { issueId, vote, comment, proofImage } = req.body;
   
-  // Check locality
-  const issue = db.prepare('SELECT latitude, longitude FROM issues WHERE id = ?').get(issueId) as any;
-  const user = db.prepare('SELECT latitude, longitude, badges, reputationPoints FROM users WHERE id = ?').get(req.user.id) as any;
+  const issue = await Issue.findOne({ id: issueId });
+  const user = await User.findOne({ id: req.user.id });
   
   if (!issue || !user) return res.status(404).json({ error: 'Issue or user not found' });
   
-  const distance = getDistance(user.latitude, user.longitude, issue.latitude, issue.longitude);
-  if (distance > 5) {
-    return res.status(403).json({ error: 'You must be within 5km of the issue to verify it.' });
+  if (user.latitude && user.longitude && issue.latitude && issue.longitude) {
+    const distance = getDistance(user.latitude, user.longitude, issue.latitude, issue.longitude);
+    if (distance > 5) {
+      return res.status(403).json({ error: 'You must be within 5km of the issue to verify it.' });
+    }
   }
 
   const id = Math.random().toString(36).substr(2, 9);
   const timestamp = new Date().toISOString();
 
-  const stmt = db.prepare('INSERT INTO votes (id, issueId, userId, vote, comment, proofImage, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  stmt.run(id, issueId, req.user.id, vote, comment, proofImage, timestamp);
-
-  if (vote === 'Resolved Properly') {
-    db.prepare('UPDATE issues SET resolvedVotes = resolvedVotes + 1 WHERE id = ?').run(issueId);
-  } else {
-    db.prepare('UPDATE issues SET unresolvedVotes = unresolvedVotes + 1 WHERE id = ?').run(issueId);
-  }
+  await Vote.create({ id, issueId, userId: req.user.id, vote, comment, proofImage, timestamp });
 
   if (proofImage) {
-    db.prepare('UPDATE issues SET proofImageUrl = ? WHERE id = ?').run(proofImage, issueId);
+    await Issue.updateOne({ id: issueId }, { proofImageUrl: proofImage });
   }
 
-  // Award points for verifying (+5 for community service) and check for "Eagle Eye" badge
-  const badges = JSON.parse(user.badges);
-  if (!badges.includes('Eagle Eye')) {
-    badges.push('Eagle Eye');
+  if (!user.badges.includes('Eagle Eye')) {
+    user.badges.push('Eagle Eye');
   }
   
-  // Check for "Locality Hero" badge (3+ verifications in own locality)
-  const verifications = db.prepare('SELECT COUNT(*) as count FROM votes WHERE userId = ?').get(req.user.id) as any;
-  if (verifications.count >= 3 && !badges.includes('Locality Hero')) {
-    badges.push('Locality Hero');
+  const verifications = await Vote.countDocuments({ userId: req.user.id });
+  if (verifications >= 3 && !user.badges.includes('Locality Hero')) {
+    user.badges.push('Locality Hero');
   }
 
-  db.prepare('UPDATE users SET reputationPoints = reputationPoints + 5, badges = ? WHERE id = ?')
-    .run(JSON.stringify(badges), req.user.id);
+  user.reputationPoints += 5;
+  await user.save();
 
   res.json({ id });
 });
 
-app.post('/api/issues/:id/admin', authenticateToken, (req: any, res) => {
+app.post('/api/issues/:id/admin', authenticateToken, async (req: any, res) => {
   const { decision } = req.body;
   const issueId = req.params.id;
   const status = decision === 'Confirm Resolved' ? 'Confirmed Resolved' : 'Reopened';
   
-  db.prepare('UPDATE issues SET status = ? WHERE id = ?').run(status, issueId);
+  await Issue.updateOne({ id: issueId }, { status });
   
   if (status === 'Confirmed Resolved') {
-    const issue = db.prepare('SELECT userId FROM issues WHERE id = ?').get(issueId) as any;
+    const issue = await Issue.findOne({ id: issueId });
     if (issue) {
-      const user = db.prepare('SELECT badges FROM users WHERE id = ?').get(issue.userId) as any;
-      const badges = JSON.parse(user.badges);
-      if (!badges.includes('Active Citizen')) badges.push('Active Citizen');
-      
-      db.prepare('UPDATE users SET reputationPoints = reputationPoints + 50, badges = ? WHERE id = ?')
-        .run(JSON.stringify(badges), issue.userId);
+      const user = await User.findOne({ id: issue.userId });
+      if (user) {
+        if (!user.badges.includes('Active Citizen')) user.badges.push('Active Citizen');
+        user.reputationPoints += 50;
+        await user.save();
+      }
     }
   }
   
   res.json({ success: true });
 });
 
-app.post('/api/verifyResolution', authenticateToken, (req: any, res) => {
+app.post('/api/verifyResolution', authenticateToken, async (req: any, res) => {
   const { issueId, vote, comment, verificationImage } = req.body;
 
   if (vote === 'Not Resolved' && !verificationImage) {
     return res.status(400).json({ error: 'Photo is mandatory when reporting as Not Resolved.' });
   }
 
-  const citizenVerification = JSON.stringify({
+  const citizenVerification = {
     vote,
     comment,
     verificationImage,
     timestamp: new Date().toISOString()
-  });
+  };
 
   const status = vote === 'Resolved Properly' ? 'Confirmed Resolved' : 'Reopened';
 
-  db.prepare('UPDATE issues SET citizenVerification = ?, status = ? WHERE id = ?').run(citizenVerification, status, issueId);
-
-  // Award points for verifying
-  db.prepare('UPDATE users SET reputationPoints = reputationPoints + 15 WHERE id = ?').run(req.user.id);
+  await Issue.updateOne({ id: issueId }, { citizenVerification, status });
+  await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 15 } });
 
   res.json({ success: true });
 });
 
-app.post('/api/communityVote', authenticateToken, (req: any, res) => {
+app.post('/api/communityVote', authenticateToken, async (req: any, res) => {
   const { issueId, vote, comment, image } = req.body;
 
-  const issue = db.prepare('SELECT communityVotes, voteCountResolved, voteCountNotResolved FROM issues WHERE id = ?').get(issueId) as any;
+  const issue = await Issue.findOne({ id: issueId });
   if (!issue) return res.status(404).json({ error: 'Issue not found' });
 
-  const communityVotes = JSON.parse(issue.communityVotes || '[]');
-  
-  // Check if user already voted
-  if (communityVotes.some((v: any) => v.userId === req.user.id)) {
+  if (issue.communityVotes.some((v: any) => v.userId === req.user.id)) {
     return res.status(400).json({ error: 'You have already voted on this resolution.' });
   }
 
-  communityVotes.push({
+  issue.communityVotes.push({
     userId: req.user.id,
     username: req.user.username,
     vote,
@@ -560,23 +570,47 @@ app.post('/api/communityVote', authenticateToken, (req: any, res) => {
     timestamp: new Date().toISOString()
   });
 
-  const voteCountResolved = vote === 'Resolved' ? (issue.voteCountResolved || 0) + 1 : (issue.voteCountResolved || 0);
-  const voteCountNotResolved = vote === 'Not Resolved' ? (issue.voteCountNotResolved || 0) + 1 : (issue.voteCountNotResolved || 0);
+  if (vote === 'Resolved') issue.voteCountResolved += 1;
+  if (vote === 'Not Resolved') issue.voteCountNotResolved += 1;
 
-  db.prepare('UPDATE issues SET communityVotes = ?, voteCountResolved = ?, voteCountNotResolved = ? WHERE id = ?')
-    .run(JSON.stringify(communityVotes), voteCountResolved, voteCountNotResolved, issueId);
+  await issue.save();
 
-  const updatedIssue = db.prepare('SELECT * FROM issues WHERE id = ?').get(issueId) as any;
+  await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 5 } });
+
+  const updatedIssue = await Issue.findOne({ id: issueId }).lean();
   if (updatedIssue) {
-    updatedIssue.communityVotes = JSON.parse(updatedIssue.communityVotes || '[]');
-    updatedIssue.votedBy = JSON.parse(updatedIssue.votedBy || '[]');
-    updatedIssue.citizenVerification = updatedIssue.citizenVerification ? JSON.parse(updatedIssue.citizenVerification) : null;
+    const { _id, __v, ...rest } = updatedIssue as any;
+    res.json({ success: true, issue: rest });
+  } else {
+    res.json({ success: true });
   }
+});
 
-  // Small reward for community voting
-  db.prepare('UPDATE users SET reputationPoints = reputationPoints + 5 WHERE id = ?').run(req.user.id);
-
-  res.json({ success: true, issue: updatedIssue });
+// Citizen Confirmation Route
+app.post('/api/issues/:id/confirm', authenticateToken, async (req: any, res) => {
+  const { isResolved, feedback, verificationImage } = req.body;
+  const issueId = req.params.id;
+  
+  const issue = await Issue.findOne({ id: issueId });
+  if (!issue) return res.status(404).json({ error: 'Issue not found' });
+  
+  if (issue.userId !== req.user.id) return res.status(403).json({ error: 'Only reporter can confirm resolution' });
+  if (issue.status !== 'Pending Citizen Confirmation') return res.status(400).json({ error: 'Issue is not pending confirmation' });
+  
+  if (isResolved) {
+    await Issue.updateOne({ id: issueId }, { 
+      status: 'Confirmed Resolved', 
+      citizenVerification: { vote: 'Resolved Properly', confirmed: true, feedback, verificationImage, timestamp: new Date().toISOString() } 
+    });
+    // Reward user for verifying
+    await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 5 } });
+  } else {
+    await Issue.updateOne({ id: issueId }, { 
+      status: 'In Progress', 
+      citizenVerification: { vote: 'Not Resolved', confirmed: false, feedback, verificationImage, timestamp: new Date().toISOString() } 
+    });
+  }
+  res.json({ success: true });
 });
 
 async function startServer() {

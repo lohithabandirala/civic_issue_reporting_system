@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, Component } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   PlusCircle, 
@@ -158,10 +159,10 @@ const NavItem = ({ active, icon, label, onClick }: any) => (
 
 // --- Main App ---
 
-export default function App() {
-  console.log("App initializing...");
+export default function App({ forcePortal }: { forcePortal?: 'user' | 'admin' } = {}) {
+  const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
-  const [view, setView] = useState('welcome');
+  const [view, setView] = useState(forcePortal ? 'auth' : 'welcome');
   const [issues, setIssues] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -208,6 +209,17 @@ export default function App() {
           if (res.ok) {
             const userData = await safeJson(res);
             if (userData) {
+              // Enforce portal separation: redirect wrong role
+              if (forcePortal === 'admin' && userData.role !== 'admin') {
+                localStorage.removeItem('civic_token');
+                setView('auth');
+                setLoading(false);
+                return;
+              }
+              if (forcePortal === 'user' && userData.role === 'admin') {
+                navigate('/admin');
+                return;
+              }
               setUser(userData);
               if (!userData.latitude && view !== 'location-setup') {
                 setView('location-setup');
@@ -216,20 +228,19 @@ export default function App() {
               }
             } else {
               localStorage.removeItem('civic_token');
-              setView('welcome');
+              setView(forcePortal ? 'auth' : 'welcome');
             }
           } else {
-            // If token is invalid/expired (401/403), just go to welcome without reloading
             localStorage.removeItem('civic_token');
-            setView('welcome');
+            setView(forcePortal ? 'auth' : 'welcome');
           }
         } catch (err) {
           console.error("Auth initialization error:", err);
           localStorage.removeItem('civic_token');
-          setView('welcome');
+          setView(forcePortal ? 'auth' : 'welcome');
         }
       } else {
-        setView('welcome');
+        setView(forcePortal ? 'auth' : 'welcome');
       }
       setLoading(false);
     };
@@ -248,7 +259,12 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem('civic_token');
     setUser(null);
-    setView('welcome');
+    if (forcePortal) {
+      setView('auth');
+    } else {
+      setView('welcome');
+      navigate('/');
+    }
   };
 
   if (loading) {
@@ -263,11 +279,25 @@ export default function App() {
     return <WelcomeScreen onLogin={() => setView('login')} onRegister={() => setView('register')} />;
   }
 
+  // Standalone auth view for /user and /admin portals
+  if (!user && view === 'auth') {
+    const isAdminPortal = forcePortal === 'admin';
+    return (
+      <AuthScreen
+        isLoginView={true}
+        toggleView={() => {}}
+        onBack={() => navigate('/')}
+        forcedPortal={forcePortal}
+      />
+    );
+  }
+
   if (!user && (view === 'login' || view === 'register')) {
     return (
       <AuthScreen 
         isLoginView={view === 'login'} 
         toggleView={() => setView(view === 'login' ? 'register' : 'login')}
+        onBack={() => setView('welcome')}
       />
     );
   }
@@ -397,60 +427,259 @@ export default function App() {
   );
 }
 
-const WelcomeScreen = ({ onLogin, onRegister }: any) => (
-  <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 relative overflow-hidden">
-    {/* Animated Background Elements */}
-    <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-civic-primary/20 blur-[120px] rounded-full animate-pulse" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-500/20 blur-[120px] rounded-full animate-pulse delay-700" />
-    </div>
+const WelcomeScreen = ({ onLogin, onRegister }: any) => {
+  const navigate = useNavigate();
+  const [stats, setStats] = useState({ total: 0, resolved: 0, inProgress: 0, pending: 0 });
 
-    <motion.div 
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className="max-w-5xl w-full bg-white/95 backdrop-blur-xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col md:flex-row border border-white/20 relative z-10"
-    >
-      <div className="md:w-1/2 p-12 lg:p-16 flex flex-col justify-center">
-        <div className="w-20 h-20 bg-gradient-to-br from-civic-primary to-blue-600 rounded-3xl flex items-center justify-center text-white mb-10 shadow-2xl shadow-blue-500/30">
-          <MapIcon size={40} />
+  useEffect(() => {
+    fetch('/api/public/stats')
+      .then(res => res.json())
+      .then(data => {
+        if (data && typeof data.total === 'number') {
+          setStats(data);
+        }
+      })
+      .catch(console.error);
+  }, []);
+
+  const resolutionRate = stats.total > 0 ? Math.round((stats.resolved / stats.total) * 100) : 0;
+
+  return (
+    <div className="min-h-screen bg-[#F4FAF7] font-sans text-slate-800 overflow-x-hidden">
+      {/* Navbar */}
+      <nav className="flex items-center justify-between px-8 py-4 bg-white shadow-sm sticky top-0 z-50">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 bg-[#00A86B] rounded-lg flex items-center justify-center text-white font-bold text-lg">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+          </div>
+          <span className="font-bold text-xl tracking-tight text-slate-900">Civic Report</span>
         </div>
-        <h1 className="text-5xl lg:text-6xl font-display font-bold text-slate-900 mb-6 leading-[1.1] tracking-tight">
-          Your City, <br />
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-civic-primary to-emerald-500">Your Voice.</span>
+        <div className="hidden md:flex items-center gap-8 font-semibold text-sm text-slate-600">
+          <a href="#" className="text-[#00A86B]">Home</a>
+          <a href="#" className="hover:text-[#00A86B] transition-colors">About</a>
+          <a href="#" className="hover:text-[#00A86B] transition-colors">gallery</a>
+          <a href="#" className="hover:text-[#00A86B] transition-colors" onClick={(e) => { e.preventDefault(); onRegister(); }}>Report Issue</a>
+          <a href="#" className="hover:text-[#00A86B] transition-colors">View Issues</a>
+          <a href="#" className="hover:text-[#00A86B] transition-colors">Contact</a>
+        </div>
+        <div className="flex items-center gap-4">
+          <button className="flex items-center gap-1 text-xs font-bold text-slate-700 bg-slate-100 px-3 py-2 rounded-md hover:bg-slate-200 transition-colors">
+            🌐 EN <ChevronDown size={14} />
+          </button>
+          <button onClick={() => navigate('/user')} className="border border-[#00A86B] text-[#00A86B] px-5 py-2.5 rounded-lg font-bold text-sm transition-colors hover:bg-[#00A86B] hover:text-white">
+            Citizen Portal
+          </button>
+          <button onClick={() => navigate('/admin')} className="bg-[#00A86B] hover:bg-[#008f5a] text-white px-5 py-2.5 rounded-lg font-bold text-sm transition-colors shadow-md shadow-[#00A86B]/20">
+            Admin Login
+          </button>
+        </div>
+      </nav>
+
+      {/* Hero Section */}
+      <div className="pt-24 pb-16 px-6 max-w-5xl mx-auto text-center">
+        <h1 className="text-5xl md:text-6xl font-black text-slate-900 mb-6 tracking-tight">
+          Greener City <span className="text-slate-900">Together.</span>
         </h1>
-        <p className="text-slate-600 text-xl mb-10 leading-relaxed max-w-md">
-          Join thousands of citizens in making our city cleaner, safer, and better for everyone. Report issues in seconds.
+        <p className="text-lg md:text-xl text-slate-600 max-w-3xl mx-auto mb-10 leading-relaxed font-medium">
+          A smart platform that connects citizens and authorities to resolve civic problems like potholes, garbage, drainage, and streetlights with real-time updates and full transparency.
         </p>
-        <div className="flex flex-col sm:flex-row gap-4">
-          <Button onClick={onRegister} className="py-5 px-10 text-lg rounded-2xl shadow-xl shadow-civic-primary/20">Get Started</Button>
-          <Button variant="outline" onClick={onLogin} className="py-5 px-10 text-lg rounded-2xl">Login</Button>
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-20">
+          <button onClick={() => navigate('/user')} className="flex items-center justify-center gap-2 bg-[#00A86B] hover:bg-[#008f5a] text-white px-8 py-4 rounded-xl font-bold text-lg transition-colors shadow-xl shadow-[#00A86B]/30 w-full sm:w-auto">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            Citizen Portal
+            <ChevronRight size={20} />
+          </button>
+          <button onClick={() => navigate('/admin')} className="flex items-center justify-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 px-8 py-4 rounded-xl font-bold text-lg transition-colors shadow-sm w-full sm:w-auto">
+            <Eye size={20} className="text-slate-500" />
+            Admin Portal
+          </button>
         </div>
-      </div>
-      <div className="md:w-1/2 bg-slate-100 relative overflow-hidden">
-        <img 
-          src="https://picsum.photos/seed/smartcity/1000/1200" 
-          alt="City" 
-          className="absolute inset-0 w-full h-full object-cover"
-          referrerPolicy="no-referrer"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-slate-900/20 to-transparent flex flex-col justify-end p-12 text-white">
-          <div className="bg-white/10 backdrop-blur-md p-8 rounded-[2rem] border border-white/20">
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
-                <CheckCircle2 size={24} />
-              </div>
-              <div>
-                <p className="font-black text-3xl">1,240+</p>
-                <p className="text-xs font-bold uppercase tracking-widest opacity-70">Issues Resolved</p>
-              </div>
-            </div>
-            <p className="text-sm opacity-90 leading-relaxed">In the last 30 days across your community. Your reports are making a real difference.</p>
+
+        {/* Hero Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-5xl mx-auto">
+          <div className="bg-white p-6 rounded-2xl shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-slate-100 flex flex-col items-center justify-center transition-transform hover:-translate-y-1">
+            <div className="text-4xl font-black text-[#00A86B] mb-2">{stats.total}</div>
+            <div className="text-xs text-slate-500 font-bold uppercase tracking-widest">Total Reports</div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-slate-100 flex flex-col items-center justify-center transition-transform hover:-translate-y-1">
+            <div className="text-4xl font-black text-[#00A86B] mb-2">{stats.resolved}</div>
+            <div className="text-xs text-slate-500 font-bold uppercase tracking-widest">Resolved</div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-slate-100 flex flex-col items-center justify-center transition-transform hover:-translate-y-1">
+            <div className="text-4xl font-black text-[#f05a1a] mb-2">{stats.inProgress}</div>
+            <div className="text-xs text-slate-500 font-bold uppercase tracking-widest">In Progress</div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-slate-100 flex flex-col items-center justify-center transition-transform hover:-translate-y-1">
+            <div className="text-4xl font-black text-[#f59e0b] mb-2">{stats.pending}</div>
+            <div className="text-xs text-slate-500 font-bold uppercase tracking-widest">Pending</div>
           </div>
         </div>
       </div>
-    </motion.div>
-  </div>
-);
+
+      {/* Dashboard Section */}
+      <div className="bg-white py-24 px-6 border-t border-slate-100">
+        <div className="max-w-6xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
+            <div className="bg-white p-8 rounded-[2rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-50 flex flex-col items-center text-center group hover:shadow-[0_8px_40px_rgb(0,0,0,0.08)] transition-all">
+              <div className="w-16 h-16 bg-[#00A86B] rounded-2xl flex items-center justify-center text-white mb-6 transform group-hover:scale-110 transition-transform">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>
+              </div>
+              <div className="text-5xl font-black text-[#00A86B] mb-3">{stats.total}</div>
+              <div className="font-bold text-slate-800 mb-2 text-lg">Total Issues Reported</div>
+              <div className="text-sm text-slate-500 font-medium">Growing community participation</div>
+            </div>
+            
+            <div className="bg-white p-8 rounded-[2rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-50 flex flex-col items-center text-center group hover:shadow-[0_8px_40px_rgb(0,0,0,0.08)] transition-all">
+              <div className="w-16 h-16 bg-[#00A86B] rounded-2xl flex items-center justify-center text-white mb-6 transform group-hover:scale-110 transition-transform">
+                <CheckCircle2 size={32} />
+              </div>
+              <div className="text-5xl font-black text-[#00A86B] mb-3">{stats.resolved}</div>
+              <div className="font-bold text-slate-800 mb-2 text-lg">Issues Resolved</div>
+              <div className="text-sm text-slate-500 font-medium">Successfully completed</div>
+            </div>
+
+            <div className="bg-white p-8 rounded-[2rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-50 flex flex-col items-center text-center group hover:shadow-[0_8px_40px_rgb(0,0,0,0.08)] transition-all">
+              <div className="w-16 h-16 bg-[#f05a1a] rounded-2xl flex items-center justify-center text-white mb-6 transform group-hover:scale-110 transition-transform">
+                <User size={32} />
+              </div>
+              <div className="text-5xl font-black text-[#f05a1a] mb-3">{stats.inProgress}</div>
+              <div className="font-bold text-slate-800 mb-2 text-lg">Issues In Progress</div>
+              <div className="text-sm text-slate-500 font-medium">Currently being addressed</div>
+            </div>
+
+            <div className="bg-white p-8 rounded-[2rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-50 flex flex-col items-center text-center group hover:shadow-[0_8px_40px_rgb(0,0,0,0.08)] transition-all">
+              <div className="w-16 h-16 bg-[#f59e0b] rounded-2xl flex items-center justify-center text-white mb-6 transform group-hover:scale-110 transition-transform">
+                <Clock size={32} />
+              </div>
+              <div className="text-5xl font-black text-[#f59e0b] mb-3">{stats.pending}</div>
+              <div className="font-bold text-slate-800 mb-2 text-lg">Pending Issues</div>
+              <div className="text-sm text-slate-500 font-medium">Awaiting assignment</div>
+            </div>
+          </div>
+
+          <div className="bg-[#00A86B] rounded-[2.5rem] p-12 text-center text-white shadow-2xl shadow-[#00A86B]/30 max-w-3xl mx-auto relative overflow-hidden">
+            <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(circle, #fff 2px, transparent 2px)', backgroundSize: '24px 24px' }}></div>
+            <div className="absolute top-[-50%] left-[-10%] w-64 h-64 bg-white/10 blur-[50px] rounded-full"></div>
+            <div className="absolute bottom-[-50%] right-[-10%] w-64 h-64 bg-emerald-900/20 blur-[50px] rounded-full"></div>
+            <div className="relative z-10">
+              <div className="text-8xl font-black mb-4 tracking-tighter">{resolutionRate}%</div>
+              <div className="text-3xl font-bold mb-4">Resolution Rate</div>
+              <p className="text-[#e6f7f0] max-w-md mx-auto text-lg font-medium">
+                Of reported issues successfully resolved by our system
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* How it works */}
+      <div className="bg-[#F8FDFB] py-24 px-6 border-t border-slate-100">
+        <div className="max-w-6xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 relative pt-14 hover:shadow-md transition-shadow">
+              <div className="absolute top-6 right-6 text-6xl font-black text-slate-100">01</div>
+              <div className="w-16 h-16 bg-[#00A86B] rounded-2xl flex items-center justify-center text-white mb-6 relative z-10 shadow-lg shadow-[#00A86B]/20">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+              </div>
+              <h3 className="text-xl font-bold mb-3 text-slate-800 relative z-10">Report an Issue</h3>
+              <p className="text-slate-500 font-medium leading-relaxed relative z-10">Submit details with description, photo, and location through our simple form.</p>
+            </div>
+
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 relative pt-14 hover:shadow-md transition-shadow">
+              <div className="absolute top-6 right-6 text-6xl font-black text-slate-100">02</div>
+              <div className="w-16 h-16 bg-[#f05a1a] rounded-2xl flex items-center justify-center text-white mb-6 relative z-10 shadow-lg shadow-[#f05a1a]/20">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
+              </div>
+              <h3 className="text-xl font-bold mb-3 text-slate-800 relative z-10">Stored in System</h3>
+              <p className="text-slate-500 font-medium leading-relaxed relative z-10">Issue is recorded in a centralized database for tracking and management.</p>
+            </div>
+
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 relative pt-14 hover:shadow-md transition-shadow">
+              <div className="absolute top-6 right-6 text-6xl font-black text-slate-100">03</div>
+              <div className="w-16 h-16 bg-[#f05a1a] rounded-2xl flex items-center justify-center text-white mb-6 relative z-10 shadow-lg shadow-[#f05a1a]/20">
+                <Bell size={32} />
+              </div>
+              <h3 className="text-xl font-bold mb-3 text-slate-800 relative z-10">Authorities Take Action</h3>
+              <p className="text-slate-500 font-medium leading-relaxed relative z-10">Concerned department is automatically notified and assigned the issue.</p>
+            </div>
+
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 relative pt-14 hover:shadow-md transition-shadow">
+              <div className="absolute top-6 right-6 text-6xl font-black text-slate-100">04</div>
+              <div className="w-16 h-16 bg-[#00A86B] rounded-2xl flex items-center justify-center text-white mb-6 relative z-10 shadow-lg shadow-[#00A86B]/20">
+                <CheckCircle2 size={32} />
+              </div>
+              <h3 className="text-xl font-bold mb-3 text-slate-800 relative z-10">Track & Resolve</h3>
+              <p className="text-slate-500 font-medium leading-relaxed relative z-10">Citizen receives real-time updates until the issue is completely resolved.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Features Grid */}
+      <div className="bg-white py-24 px-6 border-t border-slate-100">
+        <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-6">
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+            </div>
+            <h3 className="font-bold text-[#00A86B] mb-3 text-lg">Simple Reporting Form</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Quick and intuitive form to report any civic issue in just a few clicks.</p>
+          </div>
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <MapPin size={24} />
+            </div>
+            <h3 className="font-bold text-slate-800 mb-3 text-lg">Location & Photo</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Add precise location and photos for accurate issue identification and tracking.</p>
+          </div>
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path></svg>
+            </div>
+            <h3 className="font-bold text-slate-800 mb-3 text-lg">Status Tracking</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Monitor your report status from pending to resolved with live updates.</p>
+          </div>
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <User size={24} />
+            </div>
+            <h3 className="font-bold text-slate-800 mb-3 text-lg">Admin Dashboard</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Comprehensive dashboard for authorities to manage and resolve issues.</p>
+          </div>
+          
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <Bell size={24} />
+            </div>
+            <h3 className="font-bold text-slate-800 mb-3 text-lg">Smart Notifications</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Get instant notifications when your reported issue status changes.</p>
+          </div>
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <Camera size={24} />
+            </div>
+            <h3 className="font-bold text-slate-800 mb-3 text-lg">Before & After Proof</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Visual documentation showing the issue resolution with transparency.</p>
+          </div>
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <Clock size={24} />
+            </div>
+            <h3 className="font-bold text-slate-800 mb-3 text-lg">Quick Response</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Automated routing ensures issues reach the right department immediately.</p>
+          </div>
+          <div className="bg-white p-8 rounded-3xl shadow-[0_2px_20px_-3px_rgba(0,0,0,0.05)] border border-slate-100 hover:border-[#00A86B]/30 transition-colors">
+            <div className="w-12 h-12 bg-[#e6f7f0] text-[#00A86B] rounded-xl flex items-center justify-center mb-6">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+            </div>
+            <h3 className="font-bold text-slate-800 mb-3 text-lg">Secure & Reliable</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">Your data is protected with enterprise-grade security and privacy measures.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const LocationSetup = ({ onComplete }: any) => {
   const [address, setAddress] = useState('');
@@ -637,11 +866,11 @@ const LocationSetup = ({ onComplete }: any) => {
   );
 };
 
-const AuthScreen = ({ isLoginView, toggleView }: any) => {
+const AuthScreen = ({ isLoginView, toggleView, onBack, forcedPortal }: any) => {
   const [formData, setFormData] = useState({ username: '', email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isAdminPortal, setIsAdminPortal] = useState(false);
+  const [isAdminPortal, setIsAdminPortal] = useState(forcedPortal === 'admin');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -677,7 +906,17 @@ const AuthScreen = ({ isLoginView, toggleView }: any) => {
   };
 
   return (
-    <div className={cn("min-h-screen flex items-center justify-center p-6 transition-all duration-700", isAdminPortal ? "bg-slate-900" : "bg-slate-50")}>
+    <div className={cn("min-h-screen flex items-center justify-center p-6 transition-all duration-700 relative", isAdminPortal ? "bg-slate-900" : "bg-slate-50")}>
+      {onBack && (
+        <button 
+          type="button"
+          onClick={onBack}
+          className={cn("absolute top-8 left-8 flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all z-50", isAdminPortal ? "text-slate-400 hover:text-white hover:bg-white/10" : "text-slate-500 hover:text-slate-900 hover:bg-slate-200")}
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
+          Back to Home
+        </button>
+      )}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md">
         <div className="text-center mb-10">
           <motion.div 
@@ -752,7 +991,7 @@ const AuthScreen = ({ isLoginView, toggleView }: any) => {
             </Button>
             
             <div className="flex flex-col gap-4 text-center">
-              {!isAdminPortal && (
+              {!isAdminPortal && !forcedPortal && (
                 <button 
                   type="button" 
                   onClick={toggleView}
@@ -764,6 +1003,7 @@ const AuthScreen = ({ isLoginView, toggleView }: any) => {
               
               <div className={cn("h-px my-2 transition-colors", isAdminPortal ? "bg-slate-700" : "bg-slate-100")} />
               
+              {!forcedPortal && (
               <button 
                 type="button" 
                 onClick={() => {
@@ -774,6 +1014,7 @@ const AuthScreen = ({ isLoginView, toggleView }: any) => {
               >
                 {isAdminPortal ? 'Switch to Citizen Portal' : 'Administrator Portal Login'}
               </button>
+              )}
             </div>
           </form>
         </Card>
@@ -1259,6 +1500,7 @@ const IssueCard = ({ issue, onUpvote, onVerify, user, onRefresh }: any) => {
                 issue.status === 'Pending' ? 'w-1/4' : 
                 issue.status === 'Assigned' ? 'w-2/4' :
                 issue.status === 'In Progress' ? 'w-3/4' : 
+                issue.status === 'Pending Citizen Confirmation' ? 'w-[85%]' : 
                 (issue.status === 'Resolved' || issue.status === 'Confirmed Resolved') ? 'w-full' : 'w-0'
               )} />
             </div>
@@ -1274,7 +1516,7 @@ const IssueCard = ({ issue, onUpvote, onVerify, user, onRefresh }: any) => {
             Support
           </button>
           
-          {issue.status === 'Resolved' && onVerify && (
+          {issue.status === 'Pending Citizen Confirmation' && onVerify && (
             <button 
               onClick={(e) => { e.stopPropagation(); onVerify?.(); }}
               className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm transition-all shadow-lg bg-emerald-500 text-white hover:bg-emerald-600 shadow-emerald-500/20"
@@ -1284,7 +1526,7 @@ const IssueCard = ({ issue, onUpvote, onVerify, user, onRefresh }: any) => {
             </button>
           )}
 
-          {issue.userId === user?.id && issue.status !== 'Resolved' && issue.status !== 'Confirmed Resolved' && (
+          {issue.userId === user?.id && issue.status !== 'Resolved' && issue.status !== 'Pending Citizen Confirmation' && issue.status !== 'Confirmed Resolved' && (
             <button 
               disabled={loading}
               onClick={async (e) => {
@@ -1471,7 +1713,9 @@ const ReportForm = ({ user, onSuccess }: any) => {
     latitude: user?.latitude || 17.3850,
     longitude: user?.longitude || 78.4867,
     locationAddress: user?.locationAddress || '',
-    priority: 'Normal'
+    priority: 'Normal',
+    division: 'Nashik Road',
+    prabhag: '17'
   });
   const [image, setImage] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1591,11 +1835,14 @@ const ReportForm = ({ user, onSuccess }: any) => {
           locationAddress: formData.locationAddress,
           latitude: formData.latitude,
           longitude: formData.longitude,
-          priority: formData.priority
+          priority: formData.priority,
+          division: formData.division,
+          prabhag: formData.prabhag
         })
       });
 
       if (res.ok) {
+        const data = await safeJson(res);
         // Clear form
         setFormData({
           category: 'Potholes',
@@ -1603,10 +1850,16 @@ const ReportForm = ({ user, onSuccess }: any) => {
           locationAddress: user?.locationAddress || '',
           latitude: user?.latitude || 17.3850,
           longitude: user?.longitude || 78.4867,
-          priority: 'Normal'
+          priority: 'Normal',
+          division: 'Nashik Road',
+          prabhag: '17'
         });
         setImage(null);
-        alert('Issue reported successfully!');
+        if (data.isDuplicate) {
+          alert('Issue reported! Note: AI detected this might be a duplicate of a nearby issue. We have linked them for faster resolution.');
+        } else {
+          alert('Issue reported successfully!');
+        }
         if (onSuccess) onSuccess();
       } else {
         const data = await safeJson(res);
@@ -1707,6 +1960,29 @@ const ReportForm = ({ user, onSuccess }: any) => {
                     </button>
                   ))}
                 </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">Division</label>
+                <select 
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 outline-none focus:ring-4 focus:ring-civic-primary/10 focus:border-civic-primary transition-all text-sm font-medium"
+                  value={formData.division}
+                  onChange={e => setFormData({ ...formData, division: e.target.value })}
+                >
+                  {['Nashik Road', 'Panchavati', 'CIDCO', 'Satpur', 'Nashik West', 'Nashik East'].map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">Prabhag</label>
+                <select 
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 outline-none focus:ring-4 focus:ring-civic-primary/10 focus:border-civic-primary transition-all text-sm font-medium"
+                  value={formData.prabhag}
+                  onChange={e => setFormData({ ...formData, prabhag: e.target.value })}
+                >
+                  {[...Array(31)].map((_, i) => <option key={i+1} value={(i+1).toString()}>{i+1}</option>)}
+                </select>
               </div>
             </div>
             
@@ -1843,12 +2119,11 @@ const VerificationModal = ({ issue, onClose, onVoteSuccess }: any) => {
         }
       }
 
-      const res = await apiFetch('/api/verifyResolution', {
+      const res = await apiFetch(`/api/issues/${issue.id}/confirm`, {
         method: 'POST',
         body: JSON.stringify({
-          issueId: issue.id,
-          vote: voteData.vote,
-          comment: voteData.comment,
+          isResolved: voteData.vote === 'Resolved Properly',
+          feedback: voteData.comment,
           verificationImage: finalProofUrl
         })
       });
@@ -2241,9 +2516,19 @@ const CommunityFeed = ({ issues = [], user, onRefresh }: any) => {
 
 const MyReports = ({ issues = [], user, onRefresh }: any) => {
   const [votingIssue, setVotingIssue] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<'New' | 'In-Progress' | 'Completed'>('New');
 
   // Ensure we are only looking at the user's issues with safe array logic
   const myIssues = (Array.isArray(issues) ? issues : []).filter((i: any) => i && i.userId === user?.id);
+
+  const displayedIssues = useMemo(() => {
+    return myIssues.filter(i => {
+      if (activeTab === 'New') return i.status === 'Pending' || i.status === 'Assigned';
+      if (activeTab === 'In-Progress') return i.status === 'In-Progress' || i.status === 'In Progress' || i.status === 'Pending Citizen Confirmation';
+      if (activeTab === 'Completed') return i.status === 'Resolved' || i.status === 'Confirmed Resolved';
+      return false;
+    });
+  }, [myIssues, activeTab]);
 
   return (
     <motion.div 
@@ -2261,17 +2546,34 @@ const MyReports = ({ issues = [], user, onRefresh }: any) => {
         </div>
       </div>
 
-      {myIssues.length === 0 ? (
+      <div className="flex gap-4 border-b border-slate-200">
+        {(['New', 'In-Progress', 'Completed'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={cn(
+              "pb-4 px-2 text-sm font-bold transition-all border-b-2",
+              activeTab === tab 
+                ? "border-civic-primary text-civic-primary" 
+                : "border-transparent text-slate-500 hover:text-slate-700"
+            )}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      {displayedIssues.length === 0 ? (
         <Card className="p-12 text-center">
           <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
             <History size={32} />
           </div>
-          <h3 className="text-xl font-bold text-slate-900 mb-2">No reports yet</h3>
-          <p className="text-slate-500 mb-6">You haven't reported any civic issues yet. Start by reporting something in your neighborhood!</p>
+          <h3 className="text-xl font-bold text-slate-900 mb-2">No {activeTab} reports</h3>
+          <p className="text-slate-500 mb-6">You don't have any reports in this category.</p>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {myIssues.map((issue: any) => (
+          {displayedIssues.map((issue: any) => (
             <IssueCard 
               key={issue.id} 
               issue={issue} 
@@ -2437,8 +2739,31 @@ const AdminDashboard = ({ issues = [], setView }: any) => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <AdminHeatmap issues={issues} />
+        <Card className="p-6 bg-slate-900 text-white">
+          <h3 className="text-xl font-bold mb-6">Welcome VCB Admin To Complaint App</h3>
+          <div className="space-y-4">
+            {[
+              'Potholes',
+              'Waste and Garbage Dumping',
+              'Broken Drainage Chambers',
+              'Stray Dogs'
+            ].map(cat => (
+              <button 
+                key={cat}
+                onClick={() => setView('admin-issues')}
+                className="w-full flex items-center justify-between p-4 bg-slate-800 rounded-xl hover:bg-slate-700 transition-colors"
+              >
+                <span className="text-sm font-bold">{cat} Complaints</span>
+                <ArrowRight size={16} className="text-slate-400" />
+              </button>
+            ))}
+          </div>
+        </Card>
         <AdminRecentReports issues={issues.slice(0, 5)} setView={setView} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-8">
+        <AdminHeatmap issues={issues} />
       </div>
     </motion.div>
   );
@@ -2512,6 +2837,7 @@ const AdminIssueManager = ({ issues = [], onRefresh }: any) => {
 
   const filtered = useMemo(() => {
     if (filter === 'All') return safeIssues;
+    if (filter === 'Resolved') return safeIssues.filter((i: any) => i && (i.status === 'Resolved' || i.status === 'Confirmed Resolved' || i.status === 'Pending Citizen Confirmation'));
     return safeIssues.filter((i: any) => i && i.status === filter);
   }, [safeIssues, filter]);
 
@@ -2593,7 +2919,7 @@ const AdminIssueManager = ({ issues = [], onRefresh }: any) => {
                     </div>
                   </td>
                   <td className="px-6 py-4 text-sm font-medium text-slate-600">{i.username}</td>
-                  <td className="px-6 py-4"><Badge variant={i.status === 'Resolved' || i.status === 'Confirmed Resolved' ? 'success' : i.status === 'Pending' ? 'warning' : 'info'}>{i.status}</Badge></td>
+                  <td className="px-6 py-4"><Badge variant={i.status === 'Resolved' || i.status === 'Confirmed Resolved' || i.status === 'Pending Citizen Confirmation' ? 'success' : i.status === 'Pending' ? 'warning' : 'info'}>{i.status}</Badge></td>
                   <td className="px-6 py-4 border-none">
                     <span className={cn("text-xs font-black uppercase", i.priority === 'Emergency' ? 'text-red-500' : i.priority === 'High' ? 'text-amber-500' : 'text-blue-500')}>
                       {i.priority}
@@ -2613,52 +2939,105 @@ const AdminIssueManager = ({ issues = [], onRefresh }: any) => {
       {selectedIssue && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-md">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white rounded-[2.5rem] w-full max-w-2xl overflow-hidden shadow-2xl">
-            <div className="flex h-full flex-col md:flex-row">
-              <div className="md:w-1/3 bg-slate-50 p-8 border-r border-slate-100">
-                <img src={selectedIssue.imageUrl} className="w-full h-48 object-cover rounded-2xl mb-4" referrerPolicy="no-referrer" />
-                <h4 className="font-bold text-slate-900 mb-2">Issue Detail</h4>
-                <p className="text-xs text-slate-600 mb-4">{selectedIssue.description}</p>
-                <div className="space-y-2">
-                   <div className="flex justify-between text-[10px] font-bold">
-                     <span className="text-slate-400">Reporter</span>
-                     <span>{selectedIssue.username}</span>
-                   </div>
-                   <div className="flex justify-between text-[10px] font-bold">
-                     <span className="text-slate-400">Date</span>
-                     <span>{selectedIssue.timestamp ? safeFormatDate(selectedIssue.timestamp, 'MMM d, yyyy') : 'N/A'}</span>
-                   </div>
+            <div className="flex flex-col h-[80vh] overflow-y-auto">
+              <div className="p-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
+                <div className="flex items-center gap-2 text-sm text-slate-500 font-medium">
+                  <span className="bg-slate-100 p-1.5 rounded-lg"><MessageSquare size={16} /></span>
+                  Ticket ID: <span className="text-slate-900 font-bold">{selectedIssue.id}</span>
                 </div>
+                <button onClick={() => setSelectedIssue(null)} className="p-2 hover:bg-slate-100 rounded-full"><X size={20} /></button>
               </div>
-              <div className="flex-1 p-8">
-                <div className="flex items-center justify-between mb-8">
-                  <h3 className="text-2xl font-display font-bold">Management Action</h3>
-                  <button onClick={() => setSelectedIssue(null)}><X size={24} /></button>
-                </div>
 
-                <div className="space-y-6">
+              <div className="p-6 space-y-6">
+                <img src={selectedIssue.imageUrl} className="w-full h-64 object-cover rounded-2xl border border-slate-200" referrerPolicy="no-referrer" />
+                
+                <div className="space-y-4 text-sm">
                   <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase mb-2 tracking-widest">Update Status</label>
-                    <div className="grid grid-cols-2 gap-2 mb-4">
-                      {['Pending', 'Assigned', 'In Progress', 'Resolved'].map(s => (
-                        <button
-                          key={s}
-                          disabled={managementLoading}
-                          onClick={() => updateIssue(selectedIssue.id, { status: s })}
-                          className={cn(
-                            "py-2 px-3 rounded-xl text-[10px] font-bold border-2 transition-all",
-                            selectedIssue.status === s 
-                              ? "bg-civic-primary border-civic-primary text-white" 
-                              : "border-slate-100 hover:border-slate-200 text-slate-500",
-                            managementLoading && "opacity-50 cursor-not-allowed"
-                          )}
-                        >
-                          {managementLoading && selectedIssue.status !== s ? '...' : s}
-                        </button>
-                      ))}
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Complaint Type</label>
+                    <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium">{selectedIssue.category}</div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Department</label>
+                    <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium flex items-center gap-2">
+                      <Building2 size={16} className="text-slate-400" />
+                      {selectedIssue.assignedTeam || 'Unassigned Department'}
                     </div>
                   </div>
 
-                  {selectedIssue.status === 'Resolved' && (
+                  <div className="h-48 rounded-xl overflow-hidden border border-slate-200 relative">
+                    {/* Placeholder map view to prevent layout issues */}
+                    <div className="absolute inset-0 bg-slate-100 flex items-center justify-center">
+                      <div className="text-center">
+                        <MapPin size={32} className="mx-auto text-red-500 mb-2" />
+                        <p className="text-xs font-bold text-slate-500 max-w-[200px] truncate">{selectedIssue.locationAddress}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Division</label>
+                    <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium">{selectedIssue.division || 'N/A'}</div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Prabhag</label>
+                    <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium">{selectedIssue.prabhag || 'N/A'}</div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Description</label>
+                    <div className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 leading-relaxed min-h-[100px]">
+                      {selectedIssue.description}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Grievance Severity</label>
+                    <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium">{selectedIssue.priority}</div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Complaint By</label>
+                    <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium">{selectedIssue.username}</div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1">Email Id</label>
+                    <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium">{selectedIssue.userEmail || 'N/A'}</div>
+                  </div>
+                </div>
+
+                <div className="pt-6 border-t border-slate-200">
+                  <h3 className="text-center font-bold text-slate-900 mb-4">Update Your Status</h3>
+                  <div className="flex flex-col gap-3">
+                    <button
+                      disabled={managementLoading}
+                      onClick={() => updateIssue(selectedIssue.id, { status: 'In Progress' })}
+                      className={cn(
+                        "w-full py-3.5 rounded-xl font-bold transition-all shadow-md",
+                        selectedIssue.status === 'In Progress' ? "bg-orange-500 text-white shadow-orange-500/20" : "bg-red-400 text-white hover:bg-red-500 shadow-red-400/20"
+                      )}
+                    >
+                      {managementLoading && selectedIssue.status !== 'In Progress' ? 'Updating...' : 'In-Progress'}
+                    </button>
+                    <button
+                      disabled={managementLoading}
+                      onClick={() => updateIssue(selectedIssue.id, { status: 'Resolved' })}
+                      className={cn(
+                        "w-full py-3.5 rounded-xl font-bold transition-all shadow-md",
+                        (selectedIssue.status === 'Resolved' || selectedIssue.status === 'Confirmed Resolved' || selectedIssue.status === 'Pending Citizen Confirmation') 
+                          ? "bg-emerald-600 text-white shadow-emerald-600/20" 
+                          : "bg-slate-800 text-white hover:bg-slate-900 shadow-slate-800/20"
+                      )}
+                    >
+                      {managementLoading && selectedIssue.status !== 'Resolved' ? 'Updating...' : 'Completed'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-6 mt-6">
+
+                  {(selectedIssue.status === 'Resolved' || selectedIssue.status === 'Pending Citizen Confirmation' || selectedIssue.status === 'Confirmed Resolved') && (
                     <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 mb-6">
                       <label className="block text-xs font-bold text-emerald-700 uppercase mb-2 tracking-widest">Resolution Proof</label>
                       <input 
