@@ -9,6 +9,17 @@ import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import multer from 'multer';
 
+// Import Models
+import { User } from './backend/models/User';
+import { Issue } from './backend/models/Issue';
+import { WorkerTeam } from './backend/models/WorkerTeam';
+import { Vote } from './backend/models/Vote';
+import { Notification } from './backend/models/Notification';
+import { analyzeIssue } from './backend/services/ai';
+import { sendNotification } from './backend/services/notification';
+
+import os from 'os';
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,99 +27,51 @@ const __dirname = path.dirname(__filename);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'civic-connect-secret-key-2026';
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/civic_issue';
+const PORT = process.env.PORT || 3000;
 
-// Initialize Database
-mongoose.connect(MONGODB_URI).then(async () => {
-  console.log('Connected to MongoDB');
-  
-  // Seed some worker teams
-  const count = await WorkerTeam.countDocuments();
-  if (count === 0) {
-    await WorkerTeam.insertMany([
-      { id: 'team-001', name: 'Sanitation Alpha', members: ["John Doe", "Jane Smith"] },
-      { id: 'team-002', name: 'Road Repair Delta', members: ["Mike Ross", "Harvey Specter"] },
-      { id: 'team-003', name: 'Drainage Specialists', members: ["Ross Geller", "Chandler Bing"] }
-    ]);
+// Initialize Database (Serverless friendly)
+let isConnected = false;
+const connectDB = async () => {
+  if (isConnected) return;
+  try {
+    const db = await mongoose.connect(MONGODB_URI);
+    isConnected = db.connections[0].readyState === 1;
+    console.log('✅ Connected to MongoDB');
+    
+    // Seed some worker teams if none exist
+    const count = await WorkerTeam.countDocuments();
+    if (count === 0) {
+      console.log('🌱 Seeding worker teams...');
+      await WorkerTeam.insertMany([
+        { id: 'team-001', name: 'Sanitation Alpha', members: ["John Doe", "Jane Smith"] },
+        { id: 'team-002', name: 'Road Repair Delta', members: ["Mike Ross", "Harvey Specter"] },
+        { id: 'team-003', name: 'Drainage Specialists', members: ["Ross Geller", "Chandler Bing"] }
+      ]);
+    }
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err);
   }
-}).catch(err => console.error('MongoDB connection error:', err));
+};
 
-const userSchema = new mongoose.Schema({
-  id: { type: String, unique: true },
-  username: { type: String, unique: true },
-  email: { type: String, unique: true },
-  password: { type: String },
-  locationAddress: { type: String },
-  latitude: { type: Number },
-  longitude: { type: Number },
-  reputationPoints: { type: Number, default: 0 },
-  badges: { type: [String], default: [] },
-  role: { type: String, default: 'citizen' },
-  reportedIssuesCount: { type: Number, default: 0 },
-  isBlocked: { type: Number, default: 0 }
-});
-
-const issueSchema = new mongoose.Schema({
-  id: { type: String, unique: true },
-  userId: { type: String },
-  username: { type: String },
-  category: { type: String },
-  description: { type: String },
-  imageUrl: { type: String },
-  locationAddress: { type: String },
-  latitude: { type: Number },
-  longitude: { type: Number },
-  priority: { type: String },
-  status: { type: String },
-  timestamp: { type: String },
-  upvotes: { type: Number, default: 0 },
-  votedBy: { type: [String], default: [] },
-  voteCountResolved: { type: Number, default: 0 },
-  voteCountNotResolved: { type: Number, default: 0 },
-  citizenVerification: { type: Object, default: null },
-  communityVotes: { type: [Object], default: [] },
-  assignedTeam: { type: String },
-  workerImageUrl: { type: String },
-  resolutionImage: { type: String },
-  adminNotes: { type: String },
-  isFake: { type: Number, default: 0 },
-  resolvedAt: { type: String },
-  proofImageUrl: { type: String },
-  isDuplicate: { type: Boolean, default: false },
-  duplicateOf: { type: String },
-  division: { type: String },
-  prabhag: { type: String },
-  userEmail: { type: String }
-});
-
-const workerTeamSchema = new mongoose.Schema({
-  id: { type: String, unique: true },
-  name: { type: String },
-  members: { type: [String], default: [] },
-  activeTasks: { type: Number, default: 0 }
-});
-
-const voteSchema = new mongoose.Schema({
-  id: { type: String, unique: true },
-  issueId: { type: String },
-  userId: { type: String },
-  vote: { type: String },
-  comment: { type: String },
-  proofImage: { type: String },
-  timestamp: { type: String }
-});
-
-const User = mongoose.model('User', userSchema);
-const Issue = mongoose.model('Issue', issueSchema);
-const WorkerTeam = mongoose.model('WorkerTeam', workerTeamSchema);
-const Vote = mongoose.model('Vote', voteSchema);
+if (!process.env.VERCEL) {
+  connectDB();
+}
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
+// Middleware to ensure DB connection on serverless
+app.use(async (req, res, next) => {
+  if (process.env.VERCEL) {
+    await connectDB();
+  }
+  next();
+});
+
 // Setup Multer for image uploads
-const uploadDir = path.join(__dirname, 'uploads');
+const uploadDir = process.env.VERCEL ? os.tmpdir() : path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir);
+  fs.mkdirSync(uploadDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
@@ -128,9 +91,7 @@ const upload = multer({
 
 app.use('/uploads', express.static(uploadDir));
 
-app.get('/api/health', (req, res) => res.json({ ok: true, timestamp: new Date().toISOString() }));
-
-// Auth Middleware
+// --- Auth Middleware ---
 const authenticateToken = (req: any, res: any, next: any) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -144,7 +105,6 @@ const authenticateToken = (req: any, res: any, next: any) => {
   });
 };
 
-// Role-based auth
 const isAdmin = (req: any, res: any, next: any) => {
   if (req.user && req.user.role === 'admin') {
     next();
@@ -153,24 +113,10 @@ const isAdmin = (req: any, res: any, next: any) => {
   }
 };
 
-app.post('/api/upload', authenticateToken, upload.single('image'), (req: any, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image uploaded' });
-    }
-    const imageUrl = `/uploads/${req.file.filename}`;
-    res.json({ imageUrl });
-  } catch (err) {
-    console.error('Upload error:', err);
-    res.status(500).json({ error: 'Failed to upload image' });
-  }
-});
-
-// Priority Classifier Logic
+// --- Helpers ---
 function classifyPriority(category: string, description: string) {
   const emergencyKeywords = ['gas leak', 'structural collapse', 'live wire', 'emergency', 'danger', 'flood', 'accident'];
   const highKeywords = ['deep pothole', 'garbage heap', 'clogged drain', 'broken pipe', 'sanitation', 'vandalism', 'security'];
-  
   const desc = description.toLowerCase();
   
   if (emergencyKeywords.some(k => desc.includes(k)) || category === 'Electricity') return 'Emergency';
@@ -178,53 +124,63 @@ function classifyPriority(category: string, description: string) {
   return 'Normal';
 }
 
+function getDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371; // km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+// --- API Routes ---
+
+app.get('/api/health', (req, res) => res.json({ ok: true, database: 'MongoDB', timestamp: new Date().toISOString() }));
+
+app.post('/api/upload', authenticateToken, upload.single('image'), (req: any, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
+  res.json({ imageUrl: `/uploads/${req.file.filename}` });
+});
+
 // --- Auth Routes ---
-
 app.post('/api/register', async (req, res) => {
-  const { username, email, password } = req.body;
-  const id = Math.random().toString(36).substr(2, 9);
-  const hashedPassword = await bcrypt.hash(password, 10);
-  
-  const userCount = await User.countDocuments();
-  const role = userCount === 0 ? 'admin' : 'citizen';
-
   try {
-    await User.create({ id, username, email, password: hashedPassword, role });
+    const { username, email, password } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const userCount = await User.countDocuments();
+    const role = userCount === 0 ? 'admin' : 'citizen';
+    const id = Math.random().toString(36).substr(2, 9);
+
+    const user = await User.create({ id, username, email, password: hashedPassword, role });
     const token = jwt.sign({ id, username, email, role }, JWT_SECRET);
-    res.json({ token, user: { id, username, email, reputationPoints: 0, badges: [], role, reportedIssuesCount: 0 } });
-  } catch (err: any) {
-    res.status(400).json({ error: 'Username or email already exists' });
+    
+    res.json({ token, user: { id, username, email, role, reputationPoints: 0, badges: [] } });
+  } catch (err) {
+    res.status(400).json({ error: 'User already exists' });
   }
 });
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
+  const user: any = await User.findOne({ username }).lean();
   
-  const user = await User.findOne({ username }).lean();
   if (!user) return res.status(400).json({ error: 'User not found' });
-  
-  if (user.isBlocked) return res.status(403).json({ error: 'Your account has been blocked due to repeated false reports.' });
+  if (user.isBlocked) return res.status(403).json({ error: 'Account blocked' });
 
-  const validPassword = await bcrypt.compare(password, user.password as string);
-  if (!validPassword) return res.status(400).json({ error: 'Invalid password' });
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) return res.status(400).json({ error: 'Invalid credentials' });
 
   const token = jwt.sign({ id: user.id, username: user.username, email: user.email, role: user.role }, JWT_SECRET);
-  
-  const { password: _, _id, __v, ...userProfile } = user as any;
-  
-  res.json({ token, user: userProfile });
+  const { password: _, ...profile } = user;
+  res.json({ token, user: profile });
 });
 
 app.get('/api/me', authenticateToken, async (req: any, res) => {
-  try {
-    const user = await User.findOne({ id: req.user.id }).lean();
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    const { password: _, _id, __v, ...userProfile } = user as any;
-    res.json(userProfile);
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const user = await User.findOne({ id: req.user.id }, { password: 0 }).lean();
+  res.json(user);
 });
 
 app.put('/api/user/location', authenticateToken, async (req: any, res) => {
@@ -234,189 +190,81 @@ app.put('/api/user/location', authenticateToken, async (req: any, res) => {
 });
 
 // --- Issue Routes ---
-
 app.get('/api/issues', authenticateToken, async (req, res) => {
   const issues = await Issue.find().sort({ timestamp: -1 }).lean();
-  const formattedIssues = issues.map((i: any) => {
-    const { _id, __v, ...rest } = i;
-    return rest;
-  });
-  res.json(formattedIssues);
-});
-
-// Alias for GET /allIssues
-app.get('/api/allIssues', authenticateToken, async (req, res) => {
-  const issues = await Issue.find().sort({ timestamp: -1 }).lean();
-  const formattedIssues = issues.map((i: any) => {
-    const { _id, __v, ...rest } = i;
-    return rest;
-  });
-  res.json(formattedIssues);
-});
-
-app.get('/api/userIssues', authenticateToken, async (req: any, res) => {
-  const issues = await Issue.find({ userId: req.user.id }).sort({ timestamp: -1 }).lean();
-  const formattedIssues = issues.map((i: any) => {
-    const { _id, __v, ...rest } = i;
-    return rest;
-  });
-  res.json(formattedIssues);
+  res.json(issues);
 });
 
 app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
   try {
     const { category, description, imageUrl, locationAddress, latitude, longitude, priority, division, prabhag } = req.body;
-    const id = Math.random().toString(36).substr(2, 9);
-    const timestamp = new Date().toISOString();
     
-    // AI Pre-Processing: Severity Detection
-    const finalPriority = priority || classifyPriority(category, description);
+    // AI Analysis
+    const aiResult = await analyzeIssue(description, imageUrl);
+    const finalCategory = aiResult?.category || category || 'Other';
+    const finalPriority = aiResult?.priority || priority || classifyPriority(finalCategory, description);
+    const isFake = aiResult?.isLikelyFake ? 1 : 0;
+    const aiSummary = aiResult?.summary || '';
 
-    // AI Pre-Processing: Duplicate Detection (within ~200m)
+    const id = Math.random().toString(36).substr(2, 9);
+    
+    // Duplicate Detection
     let isDuplicate = false;
     let duplicateOf = undefined;
     if (latitude && longitude) {
-      const duplicateRadius = 0.002;
-      const recentDuplicate = await Issue.findOne({
-        category,
-        latitude: { $gte: latitude - duplicateRadius, $lte: latitude + duplicateRadius },
-        longitude: { $gte: longitude - duplicateRadius, $lte: longitude + duplicateRadius },
-        status: { $in: ['Pending', 'Assigned', 'In Progress'] }
+      const existing = await Issue.findOne({
+        category: finalCategory,
+        latitude: { $gte: latitude - 0.002, $lte: latitude + 0.002 },
+        longitude: { $gte: longitude - 0.002, $lte: longitude + 0.002 },
+        status: { $ne: 'Resolved' }
       });
-      if (recentDuplicate) {
-        isDuplicate = true;
-        duplicateOf = recentDuplicate.id;
-      }
+      if (existing) { isDuplicate = true; duplicateOf = existing.id; }
     }
 
-    // Intelligent Routing
+    // Routing
     let assignedTeam = undefined;
-    let initialStatus = 'Pending';
+    let status = 'Pending';
     if (!isDuplicate) {
-      if (category === 'Sanitation') assignedTeam = 'team-001';
-      else if (category === 'Roads') assignedTeam = 'team-002';
-      else if (category === 'Drainage') assignedTeam = 'team-003';
-      
-      if (assignedTeam) {
-        initialStatus = 'Assigned';
-        // Increment active tasks for team
-        await WorkerTeam.updateOne({ id: assignedTeam }, { $inc: { activeTasks: 1 } });
-      }
+      if (finalCategory === 'Sanitation') assignedTeam = 'team-001';
+      else if (finalCategory === 'Roads') assignedTeam = 'team-002';
+      else if (finalCategory === 'Drainage') assignedTeam = 'team-003';
+      if (assignedTeam) { status = 'Assigned'; await WorkerTeam.updateOne({ id: assignedTeam }, { $inc: { activeTasks: 1 } }); }
     }
 
     await Issue.create({
-      id, userId: req.user.id, username: req.user.username, userEmail: req.user.email, category, description,
-      imageUrl, locationAddress, latitude, longitude, priority: finalPriority,
-      division, prabhag,
-      status: initialStatus, timestamp, assignedTeam, isDuplicate, duplicateOf
+      id, userId: req.user.id, username: req.user.username, userEmail: req.user.email,
+      category: finalCategory, description, imageUrl, locationAddress, latitude, longitude,
+      priority: finalPriority, status, division, prabhag, isDuplicate, duplicateOf,
+      isFake, adminNotes: aiSummary,
+      timestamp: new Date().toISOString(), assignedTeam
     });
-    
-    const user = await User.findOne({ id: req.user.id });
-    if (user) {
-      if (!user.badges.includes('First Responder')) {
-        user.badges.push('First Responder');
+
+    await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 10, reportedIssuesCount: 1 } });
+
+    // Send Notifications
+    if (!isFake && !isDuplicate) {
+      if (assignedTeam) {
+        await sendNotification(assignedTeam, 'New Task Assigned', `A new ${finalCategory} issue has been assigned to your team.`, id);
       }
-      user.reputationPoints += 10;
-      user.reportedIssuesCount += 1;
-      await user.save();
+      await sendNotification('admin', 'New Civic Issue', `A new ${finalPriority} priority issue has been reported in ${finalCategory}.`, id);
+    } else if (isDuplicate) {
+      await sendNotification(req.user.id, 'Duplicate Report', `Your report has been marked as a duplicate of issue #${duplicateOf}.`, id);
     }
-    
-    res.json({ id, priority: finalPriority, status: initialStatus, isDuplicate, duplicateOf });
-  } catch (err: any) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to report issue' });
+
+    res.json({ success: true, id, status, aiAnalysis: { category: finalCategory, priority: finalPriority, isFake: !!isFake } });
+  } catch (err) {
+    console.error("Report Error:", err);
+    res.status(500).json({ error: 'Failed to report' });
   }
 });
 
-// Legacy endpoint support
-app.post('/api/issues', authenticateToken, (req: any, res) => {
-  res.redirect(307, '/api/reportIssue');
-});
-
-app.post('/api/setLocation', authenticateToken, async (req: any, res) => {
-  const { locationAddress, latitude, longitude } = req.body;
-  await User.updateOne({ id: req.user.id }, { locationAddress, latitude, longitude });
-  res.json({ success: true });
-});
-
-// --- Admin Routes ---
-
-app.get('/api/admin/issues', authenticateToken, isAdmin, async (req, res) => {
-  const { status, category } = req.query;
-  const filter: any = {};
-  if (status) filter.status = status;
-  if (category) filter.category = category;
-
-  const issues = await Issue.find(filter).sort({ timestamp: -1 }).lean();
-  const formattedIssues = issues.map((i: any) => {
-    const { _id, __v, ...rest } = i;
-    return rest;
-  });
-  res.json(formattedIssues);
-});
-
-app.put('/api/admin/issues/:id', authenticateToken, isAdmin, async (req: any, res) => {
-  const { status, assignedTeam, resolutionImage, adminNotes, isFake } = req.body;
-  const issueId = req.params.id;
-
-  const updates: any = {};
-
-  if (status) {
-    if (status === 'Resolved') {
-      updates.status = 'Pending Citizen Confirmation';
-      updates.resolvedAt = new Date().toISOString();
-    } else {
-      updates.status = status;
-    }
-  }
-  if (assignedTeam) {
-    updates.assignedTeam = assignedTeam;
-    const currentIssue = await Issue.findOne({ id: issueId });
-    if (currentIssue?.status === 'Pending' || !currentIssue?.status) {
-      if (!status) updates.status = 'Assigned';
-    }
-  }
-  if (resolutionImage) updates.resolutionImage = resolutionImage;
-  if (adminNotes) updates.adminNotes = adminNotes;
-  if (isFake !== undefined) {
-    updates.isFake = isFake ? 1 : 0;
-    if (isFake) {
-      const issue = await Issue.findOne({ id: issueId });
-      if (issue) {
-        const fakeCount = await Issue.countDocuments({ userId: issue.userId, isFake: 1 });
-        if (fakeCount >= 3) {
-          await User.updateOne({ id: issue.userId }, { isBlocked: 1 });
-        }
-      }
-    }
-  }
-
-  if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No updates provided' });
-
-  await Issue.updateOne({ id: issueId }, { $set: updates });
-  res.json({ success: true });
-});
-
-app.get('/api/admin/teams', authenticateToken, isAdmin, async (req, res) => {
-  const teams = await WorkerTeam.find().lean();
-  const formatted = teams.map((t: any) => {
-    const { _id, __v, ...rest } = t;
-    return rest;
-  });
-  res.json(formatted);
-});
-
+// --- Admin & Voting ---
 app.get('/api/admin/stats', authenticateToken, isAdmin, async (req, res) => {
   const total = await Issue.countDocuments();
   const resolved = await Issue.countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
   const pending = await Issue.countDocuments({ status: 'Pending' });
-  
-  const categoryStatsRaw = await Issue.aggregate([
-    { $group: { _id: "$category", count: { $sum: 1 } } }
-  ]);
-  const categories = categoryStatsRaw.map(c => ({ category: c._id, count: c.count }));
-  
-  res.json({ total, resolved, pending, categories });
+  const categories = await Issue.aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }]);
+  res.json({ total, resolved, pending, categories: categories.map(c => ({ category: c._id, count: c.count })) });
 });
 
 app.get('/api/public/stats', async (req, res) => {
@@ -424,219 +272,28 @@ app.get('/api/public/stats', async (req, res) => {
   const resolved = await Issue.countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
   const inProgress = await Issue.countDocuments({ status: { $in: ['Assigned', 'In Progress'] } });
   const pending = await Issue.countDocuments({ status: 'Pending' });
-  
   res.json({ total, resolved, inProgress, pending });
 });
 
-app.get('/api/issueHeatmapData', authenticateToken, async (req, res) => {
-  const points = await Issue.find({}, { latitude: 1, longitude: 1, priority: 1, _id: 0 }).lean();
-  res.json(points);
-});
-
-app.post('/api/issues/:id/upvote', authenticateToken, async (req: any, res) => {
-  const issueId = req.params.id;
-  const issue = await Issue.findOne({ id: issueId });
-  if (!issue) return res.status(404).json({ error: 'Issue not found' });
-
-  if (issue.votedBy.includes(req.user.id)) {
-    return res.status(400).json({ error: 'Already upvoted' });
-  }
-
-  issue.votedBy.push(req.user.id);
-  issue.upvotes += 1;
-  await issue.save();
-  
-  await User.updateOne({ id: issue.userId }, { $inc: { reputationPoints: 2 } });
-  
-  res.json({ success: true });
-});
-
-// Helper for distance calculation (Haversine formula)
-function getDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const R = 6371; // Radius of the earth in km
-  const dLat = deg2rad(lat2 - lat1);
-  const dLon = deg2rad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c; // Distance in km
-}
-
-function deg2rad(deg: number) {
-  return deg * (Math.PI / 180);
-}
-
-app.post('/api/votes', authenticateToken, async (req: any, res) => {
-  const { issueId, vote, comment, proofImage } = req.body;
-  
-  const issue = await Issue.findOne({ id: issueId });
-  const user = await User.findOne({ id: req.user.id });
-  
-  if (!issue || !user) return res.status(404).json({ error: 'Issue or user not found' });
-  
-  if (user.latitude && user.longitude && issue.latitude && issue.longitude) {
-    const distance = getDistance(user.latitude, user.longitude, issue.latitude, issue.longitude);
-    if (distance > 5) {
-      return res.status(403).json({ error: 'You must be within 5km of the issue to verify it.' });
-    }
-  }
-
-  const id = Math.random().toString(36).substr(2, 9);
-  const timestamp = new Date().toISOString();
-
-  await Vote.create({ id, issueId, userId: req.user.id, vote, comment, proofImage, timestamp });
-
-  if (proofImage) {
-    await Issue.updateOne({ id: issueId }, { proofImageUrl: proofImage });
-  }
-
-  if (!user.badges.includes('Eagle Eye')) {
-    user.badges.push('Eagle Eye');
-  }
-  
-  const verifications = await Vote.countDocuments({ userId: req.user.id });
-  if (verifications >= 3 && !user.badges.includes('Locality Hero')) {
-    user.badges.push('Locality Hero');
-  }
-
-  user.reputationPoints += 5;
-  await user.save();
-
-  res.json({ id });
-});
-
-app.post('/api/issues/:id/admin', authenticateToken, async (req: any, res) => {
-  const { decision } = req.body;
-  const issueId = req.params.id;
-  const status = decision === 'Confirm Resolved' ? 'Confirmed Resolved' : 'Reopened';
-  
-  await Issue.updateOne({ id: issueId }, { status });
-  
-  if (status === 'Confirmed Resolved') {
-    const issue = await Issue.findOne({ id: issueId });
-    if (issue) {
-      const user = await User.findOne({ id: issue.userId });
-      if (user) {
-        if (!user.badges.includes('Active Citizen')) user.badges.push('Active Citizen');
-        user.reputationPoints += 50;
-        await user.save();
-      }
-    }
-  }
-  
-  res.json({ success: true });
-});
-
-app.post('/api/verifyResolution', authenticateToken, async (req: any, res) => {
-  const { issueId, vote, comment, verificationImage } = req.body;
-
-  if (vote === 'Not Resolved' && !verificationImage) {
-    return res.status(400).json({ error: 'Photo is mandatory when reporting as Not Resolved.' });
-  }
-
-  const citizenVerification = {
-    vote,
-    comment,
-    verificationImage,
-    timestamp: new Date().toISOString()
-  };
-
-  const status = vote === 'Resolved Properly' ? 'Confirmed Resolved' : 'Reopened';
-
-  await Issue.updateOne({ id: issueId }, { citizenVerification, status });
-  await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 15 } });
-
-  res.json({ success: true });
-});
-
-app.post('/api/communityVote', authenticateToken, async (req: any, res) => {
-  const { issueId, vote, comment, image } = req.body;
-
-  const issue = await Issue.findOne({ id: issueId });
-  if (!issue) return res.status(404).json({ error: 'Issue not found' });
-
-  if (issue.communityVotes.some((v: any) => v.userId === req.user.id)) {
-    return res.status(400).json({ error: 'You have already voted on this resolution.' });
-  }
-
-  issue.communityVotes.push({
-    userId: req.user.id,
-    username: req.user.username,
-    vote,
-    comment,
-    image,
-    timestamp: new Date().toISOString()
-  });
-
-  if (vote === 'Resolved') issue.voteCountResolved += 1;
-  if (vote === 'Not Resolved') issue.voteCountNotResolved += 1;
-
-  await issue.save();
-
-  await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 5 } });
-
-  const updatedIssue = await Issue.findOne({ id: issueId }).lean();
-  if (updatedIssue) {
-    const { _id, __v, ...rest } = updatedIssue as any;
-    res.json({ success: true, issue: rest });
-  } else {
-    res.json({ success: true });
-  }
-});
-
-// Citizen Confirmation Route
-app.post('/api/issues/:id/confirm', authenticateToken, async (req: any, res) => {
-  const { isResolved, feedback, verificationImage } = req.body;
-  const issueId = req.params.id;
-  
-  const issue = await Issue.findOne({ id: issueId });
-  if (!issue) return res.status(404).json({ error: 'Issue not found' });
-  
-  if (issue.userId !== req.user.id) return res.status(403).json({ error: 'Only reporter can confirm resolution' });
-  if (issue.status !== 'Pending Citizen Confirmation') return res.status(400).json({ error: 'Issue is not pending confirmation' });
-  
-  if (isResolved) {
-    await Issue.updateOne({ id: issueId }, { 
-      status: 'Confirmed Resolved', 
-      citizenVerification: { vote: 'Resolved Properly', confirmed: true, feedback, verificationImage, timestamp: new Date().toISOString() } 
-    });
-    // Reward user for verifying
-    await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 5 } });
-  } else {
-    await Issue.updateOne({ id: issueId }, { 
-      status: 'In Progress', 
-      citizenVerification: { vote: 'Not Resolved', confirmed: false, feedback, verificationImage, timestamp: new Date().toISOString() } 
-    });
-  }
-  res.json({ success: true });
-});
+// Fallback for SPA
+// Export the app for Vercel
+export default app;
 
 async function startServer() {
-  try {
-    console.log('Starting server initialization...');
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('Initializing Vite middleware...');
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: 'spa',
-      });
-      app.use(vite.middlewares);
-    } else {
-      console.log('Serving production build from dist/');
-      app.use(express.static(path.join(__dirname, 'dist')));
-      app.get('*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-      });
-    }
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
+    app.use(vite.middlewares);
+  } else if (!process.env.VERCEL) {
+    app.use(express.static(path.join(__dirname, 'dist')));
+    app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
+  }
 
-    app.listen(3000, '0.0.0.0', () => {
-      console.log('Server running on http://localhost:3000');
-    });
-  } catch (err) {
-    console.error('SERVER FATAL STARTUP ERROR:', err);
+  if (!process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on http://localhost:${PORT}`));
   }
 }
 
-startServer();
+// Start server only if not on Vercel and not being imported as a module
+if (!process.env.VERCEL) {
+  startServer();
+}

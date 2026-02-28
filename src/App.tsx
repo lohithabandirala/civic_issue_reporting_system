@@ -284,10 +284,20 @@ export default function App({ forcePortal }: { forcePortal?: 'user' | 'admin' } 
     const isAdminPortal = forcePortal === 'admin';
     return (
       <AuthScreen
-        isLoginView={true}
-        toggleView={() => {}}
+        isLoginView={view !== 'register'} 
+        toggleView={() => setView(view === 'register' ? 'auth' : 'register')}
         onBack={() => navigate('/')}
         forcedPortal={forcePortal}
+      />
+    );
+  }
+
+  if (!user && view === 'register') {
+    return (
+      <AuthScreen 
+        isLoginView={false} 
+        toggleView={() => setView('auth')}
+        onBack={() => setView('welcome')}
       />
     );
   }
@@ -466,11 +476,11 @@ const WelcomeScreen = ({ onLogin, onRegister }: any) => {
           <button className="flex items-center gap-1 text-xs font-bold text-slate-700 bg-slate-100 px-3 py-2 rounded-md hover:bg-slate-200 transition-colors">
             🌐 EN <ChevronDown size={14} />
           </button>
-          <button onClick={() => navigate('/user')} className="border border-[#00A86B] text-[#00A86B] px-5 py-2.5 rounded-lg font-bold text-sm transition-colors hover:bg-[#00A86B] hover:text-white">
-            Citizen Portal
+          <button onClick={() => navigate('/user')} className="text-slate-700 px-5 py-2.5 rounded-lg font-bold text-sm transition-colors hover:bg-slate-50">
+            Login
           </button>
-          <button onClick={() => navigate('/admin')} className="bg-[#00A86B] hover:bg-[#008f5a] text-white px-5 py-2.5 rounded-lg font-bold text-sm transition-colors shadow-md shadow-[#00A86B]/20">
-            Admin Login
+          <button onClick={() => onRegister()} className="bg-[#00A86B] hover:bg-[#008f5a] text-white px-5 py-2.5 rounded-lg font-bold text-sm transition-colors shadow-md shadow-[#00A86B]/20">
+            Sign Up
           </button>
         </div>
       </nav>
@@ -991,7 +1001,7 @@ const AuthScreen = ({ isLoginView, toggleView, onBack, forcedPortal }: any) => {
             </Button>
             
             <div className="flex flex-col gap-4 text-center">
-              {!isAdminPortal && !forcedPortal && (
+              {(!isAdminPortal || !forcedPortal) && (
                 <button 
                   type="button" 
                   onClick={toggleView}
