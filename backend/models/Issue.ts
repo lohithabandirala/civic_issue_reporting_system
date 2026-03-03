@@ -30,7 +30,14 @@ const issueSchema = new mongoose.Schema({
   duplicateOf: { type: String },
   division: { type: String },
   prabhag: { type: String },
-  userEmail: { type: String }
+  userEmail: { type: String },
+  // AI Analysis results stored on the issue
+  aiAnalysis: { type: Object, default: null },
+  // Image analysis
+  imageDescription: { type: String },
+  imageTextMatch: { type: Boolean },
+  imageTextCoherenceScore: { type: Number },
+  overallTrustScore: { type: Number },
 });
 
 export const Issue = mongoose.models.Issue || mongoose.model('Issue', issueSchema);

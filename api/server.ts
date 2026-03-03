@@ -1,4 +1,5 @@
 import express from 'express';
+import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -8,7 +9,7 @@ import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import multer from 'multer';
 
-// Import Models (adjusted paths for api/ folder)
+// Import Models
 import { User } from '../backend/models/User.js';
 import { Issue } from '../backend/models/Issue.js';
 import { WorkerTeam } from '../backend/models/WorkerTeam.js';
@@ -38,13 +39,13 @@ const connectDB = async () => {
     console.log('✅ Connected to MongoDB');
     
     // Seed some worker teams if none exist
-    const count = await WorkerTeam.countDocuments();
+    const count = await (WorkerTeam as any).countDocuments();
     if (count === 0) {
       console.log('🌱 Seeding worker teams...');
-      await WorkerTeam.insertMany([
-        { id: 'team-001', name: 'Sanitation Alpha', members: ["John Doe", "Jane Smith"] },
-        { id: 'team-002', name: 'Road Repair Delta', members: ["Mike Ross", "Harvey Specter"] },
-        { id: 'team-003', name: 'Drainage Specialists', members: ["Ross Geller", "Chandler Bing"] }
+      await (WorkerTeam as any).insertMany([
+        { id: 'team-001', name: 'Sanitation Alpha', members: ["John Doe", "Jane Smith"], activeTasks: 0 },
+        { id: 'team-002', name: 'Road Repair Delta', members: ["Mike Ross", "Harvey Specter"], activeTasks: 0 },
+        { id: 'team-003', name: 'Drainage Specialists', members: ["Ross Geller", "Chandler Bing"], activeTasks: 0 }
       ]);
     }
   } catch (err) {
@@ -149,11 +150,11 @@ app.post('/api/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
     const hashedPassword = await bcrypt.hash(password, 10);
-    const userCount = await User.countDocuments();
+    const userCount = await (User as any).countDocuments();
     const role = userCount === 0 ? 'admin' : 'citizen';
     const id = Math.random().toString(36).substr(2, 9);
 
-    const user = await User.create({ id, username, email, password: hashedPassword, role });
+    const user = await (User as any).create({ id, username, email, password: hashedPassword, role });
     const token = jwt.sign({ id, username, email, role }, JWT_SECRET);
     
     res.json({ token, user: { id, username, email, role, reputationPoints: 0, badges: [] } });
@@ -170,7 +171,7 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
-  const user: any = await User.findOne({ username }).lean();
+  const user: any = await (User as any).findOne({ username }).lean();
   
   if (!user) return res.status(400).json({ error: 'User not found' });
   if (user.isBlocked) return res.status(403).json({ error: 'Account blocked' });
@@ -184,20 +185,88 @@ app.post('/api/login', async (req, res) => {
 });
 
 app.get('/api/me', authenticateToken, async (req: any, res) => {
-  const user = await User.findOne({ id: req.user.id }, { password: 0 }).lean();
+  const user = await (User as any).findOne({ id: req.user.id }, { password: 0 }).lean();
   res.json(user);
 });
 
 app.put('/api/user/location', authenticateToken, async (req: any, res) => {
   const { locationAddress, latitude, longitude } = req.body;
-  await User.updateOne({ id: req.user.id }, { locationAddress, latitude, longitude });
+  await (User as any).updateOne({ id: req.user.id }, { locationAddress, latitude, longitude });
   res.json({ success: true });
 });
 
 // --- Issue Routes ---
 app.get('/api/issues', authenticateToken, async (req, res) => {
-  const issues = await Issue.find().sort({ timestamp: -1 }).lean();
+  const issues = await (Issue as any).find().sort({ timestamp: -1 }).lean();
   res.json(issues);
+});
+
+app.post('/api/issues/:id/upvote', authenticateToken, async (req: any, res) => {
+  try {
+    const issueId = req.params.id;
+    const userId = req.user.id;
+    
+    const issue = await (Issue as any).findOne({ id: issueId });
+    if (!issue) return res.status(404).json({ error: 'Issue not found' });
+    
+    // Check if user already upvoted
+    if (issue.votedBy && issue.votedBy.includes(userId)) {
+      // Remove vote (toggle)
+      await (Issue as any).updateOne(
+        { id: issueId },
+        { 
+          $inc: { upvotes: -1 },
+          $pull: { votedBy: userId }
+        }
+      );
+      return res.json({ success: true, message: 'Upvote removed' });
+    }
+    
+    // Add vote
+    await (Issue as any).updateOne(
+      { id: issueId },
+      { 
+        $inc: { upvotes: 1 },
+        $push: { votedBy: userId }
+      }
+    );
+    res.json({ success: true, message: 'Upvote added' });
+  } catch (err) {
+    console.error("Upvote Error:", err);
+    res.status(500).json({ error: 'Failed to upvote' });
+  }
+});
+
+app.post('/api/communityVote', authenticateToken, async (req: any, res) => {
+  try {
+    const { issueId, vote, comment, proofUrl } = req.body;
+    const userId = req.user.id;
+    const username = req.user.username;
+
+    const issue = await (Issue as any).findOne({ id: issueId });
+    if (!issue) return res.status(404).json({ error: 'Issue not found' });
+
+    // Check if user already voted
+    const existingVote = issue.communityVotes?.find((v: any) => v.userId === userId);
+    if (existingVote) {
+      return res.status(400).json({ error: 'You have already voted on this issue.' });
+    }
+
+    const voteObj = { userId, username, vote, comment, proofUrl, timestamp: new Date().toISOString() };
+    const updateQuery: any = { $push: { communityVotes: voteObj } };
+    
+    if (vote === 'Resolved') {
+      updateQuery.$inc = { voteCountResolved: 1 };
+    } else {
+      updateQuery.$inc = { voteCountNotResolved: 1 };
+    }
+
+    await (Issue as any).updateOne({ id: issueId }, updateQuery);
+    res.json({ success: true, message: 'Vote submitted successfully' });
+  } catch (err) {
+    console.error("Community Vote Error:", err);
+    res.status(500).json({ error: 'Failed to submit vote' });
+  }
 });
 
 app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
@@ -217,7 +286,7 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
     let isDuplicate = false;
     let duplicateOf = undefined;
     if (latitude && longitude) {
-      const existing = await Issue.findOne({
+      const existing = await (Issue as any).findOne({
         category: finalCategory,
         latitude: { $gte: latitude - 0.002, $lte: latitude + 0.002 },
         longitude: { $gte: longitude - 0.002, $lte: longitude + 0.002 },
@@ -230,13 +299,22 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
     let assignedTeam = undefined;
     let status = 'Pending';
     if (!isDuplicate) {
-      if (finalCategory === 'Sanitation') assignedTeam = 'team-001';
-      else if (finalCategory === 'Roads') assignedTeam = 'team-002';
-      else if (finalCategory === 'Drainage') assignedTeam = 'team-003';
-      if (assignedTeam) { status = 'Assigned'; await WorkerTeam.updateOne({ id: assignedTeam }, { $inc: { activeTasks: 1 } }); }
+      const catLower = finalCategory.toLowerCase();
+      if (catLower.includes('sanitation') || catLower.includes('garbage')) {
+        assignedTeam = 'team-001';
+      } else if (catLower.includes('road') || catLower.includes('pothole')) {
+        assignedTeam = 'team-002';
+      } else if (catLower.includes('drainage') || catLower.includes('water')) {
+        assignedTeam = 'team-003';
+      }
+      
+      if (assignedTeam) { 
+        status = 'Assigned'; 
+        await WorkerTeam.updateOne({ id: assignedTeam }, { $inc: { activeTasks: 1 } }); 
+      }
     }
 
-    await Issue.create({
+    await (Issue as any).create({
       id, userId: req.user.id, username: req.user.username, userEmail: req.user.email,
       category: finalCategory, description, imageUrl, locationAddress, latitude, longitude,
       priority: finalPriority, status, division, prabhag, isDuplicate, duplicateOf,
@@ -244,7 +322,7 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
       timestamp: new Date().toISOString(), assignedTeam
     });
 
-    await User.updateOne({ id: req.user.id }, { $inc: { reputationPoints: 10, reportedIssuesCount: 1 } });
+    await (User as any).updateOne({ id: req.user.id }, { $inc: { reputationPoints: 10, reportedIssuesCount: 1 } });
 
     // Send Notifications
     if (!isFake && !isDuplicate) {
@@ -265,20 +343,40 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
 
 // --- Admin & Voting ---
 app.get('/api/admin/stats', authenticateToken, isAdmin, async (req, res) => {
-  const total = await Issue.countDocuments();
-  const resolved = await Issue.countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
-  const pending = await Issue.countDocuments({ status: 'Pending' });
-  const categories = await Issue.aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }]);
+  const total = await (Issue as any).countDocuments();
+  const resolved = await (Issue as any).countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
+  const pending = await (Issue as any).countDocuments({ status: 'Pending' });
+  const categories = await (Issue as any).aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }]);
   res.json({ total, resolved, pending, categories: categories.map(c => ({ category: c._id, count: c.count })) });
 });
 
 app.get('/api/public/stats', async (req, res) => {
-  const total = await Issue.countDocuments();
-  const resolved = await Issue.countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
-  const inProgress = await Issue.countDocuments({ status: { $in: ['Assigned', 'In Progress'] } });
-  const pending = await Issue.countDocuments({ status: 'Pending' });
+  const total = await (Issue as any).countDocuments();
+  const resolved = await (Issue as any).countDocuments({ status: { $in: ['Resolved', 'Confirmed Resolved'] } });
+  const inProgress = await (Issue as any).countDocuments({ status: { $in: ['Assigned', 'In Progress'] } });
+  const pending = await (Issue as any).countDocuments({ status: 'Pending' });
   res.json({ total, resolved, inProgress, pending });
 });
 
+// Fallback for SPA
 // Export the app for Vercel
 export default app;
+
+async function startServer() {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
+    app.use(vite.middlewares);
+  } else if (!process.env.VERCEL) {
+    app.use(express.static(path.join(__dirname, 'dist')));
+    app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
+  }
+
+  if (!process.env.VERCEL) {
+    app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+  }
+}
+
+// Start server only if not on Vercel and not being imported as a module
+if (!process.env.VERCEL) {
+  startServer();
+}
