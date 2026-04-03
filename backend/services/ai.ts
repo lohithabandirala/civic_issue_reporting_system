@@ -8,6 +8,36 @@ dotenv.config();
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 /**
+ * Call Gemini with retry and model fallback
+ * Tries gemini-2.0-flash-lite first, falls back to gemini-2.0-flash on 429
+ */
+async function callGeminiWithRetry(parts: any[], maxRetries = 2): Promise<string> {
+  const models = ["gemini-2.0-flash-lite", "gemini-2.0-flash"];
+  
+  for (const model of models) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const result = await genAI.models.generateContent({
+          model,
+          contents: [{ role: "user", parts }]
+        });
+        return result.text;
+      } catch (err: any) {
+        if (err?.status === 429) {
+          console.warn(`⚠️ Rate limited on ${model} (attempt ${attempt + 1}). ${attempt < maxRetries - 1 ? 'Retrying in 3s...' : 'Trying next model...'}`);
+          if (attempt < maxRetries - 1) {
+            await new Promise(r => setTimeout(r, 3000));
+          }
+        } else {
+          throw err; // Re-throw non-rate-limit errors
+        }
+      }
+    }
+  }
+  throw new Error('All Gemini models rate-limited. Please try again later.');
+}
+
+/**
  * Detect MIME type from file extension
  */
 function getMimeType(filePath: string): string {
@@ -46,7 +76,7 @@ function buildImageParts(imageUrl?: string): any[] {
   return [];
 }
 
-export async function analyzeIssue(description: string, imageUrl?: string) {
+export async function analyzeIssue(description: string, imageUrl?: string, category?: string) {
   try {
     if (!process.env.GEMINI_API_KEY) {
       console.warn("⚠️ GEMINI_API_KEY not found in .env. Falling back to keyword analysis.");
@@ -56,14 +86,61 @@ export async function analyzeIssue(description: string, imageUrl?: string) {
     // Build a prompt that analyzes BOTH image and text together
     let prompt: string;
     if (imageUrl) {
-      prompt = `You are a civic infrastructure complaint analysis AI. You have been given a complaint description AND an image.
+      prompt = `You are a STRICT civic infrastructure complaint verification AI. You have been given a complaint with a CATEGORY (heading), DESCRIPTION (text), and an uploaded IMAGE.
 
+CATEGORY/HEADING: "${category || 'Not specified'}"
 DESCRIPTION: "${description}"
 
-Analyze BOTH the image AND the description together. Determine:
-1. What does the image actually show? Describe it briefly.
-2. Does the description match the image content? (image-text coherence)
-3. Is this a genuine civic infrastructure complaint or is it fake/irrelevant?
+YOUR #1 JOB: Determine if the uploaded image ACTUALLY MATCHES the description and category heading.
+
+STRICT RULES FOR FAKE DETECTION:
+1. The image MUST show the specific civic issue described in the heading AND description.
+2. If the description says "pothole" but the image shows a cat, food, selfie, meme, or anything unrelated → mark as FAKE.
+3. If the description says "garbage overflow" but the image shows a clean road, a building, or something irrelevant → mark as FAKE.
+4. If the image shows ANY of these unrelated content, it is FAKE regardless of description:
+   - Selfies, portraits, people posing
+   - Food, animals, pets
+   - Memes, screenshots, social media posts
+   - Random landscapes with NO visible civic issue
+   - Interiors of homes (unless showing water leak/damage)
+   - Product photos, advertisements
+   - AI-generated or stock photos of civic issues
+5. Even if the image shows SOME civic issue, if it does NOT match the SPECIFIC issue described (e.g., description says "broken streetlight" but image shows a pothole), it should be flagged with low coherence and isLikelyFake = true.
+6. The description text and heading MUST be logically consistent with what the image shows. ANY mismatch = FAKE.
+
+Analyze step-by-step:
+1. What does the image ACTUALLY show? Describe it objectively.
+2. Does the image show a real civic infrastructure problem?
+3. Does the civic problem shown in the image match the category heading "${category || 'Not specified'}"?
+4. Does the civic problem shown in the image match what the description says: "${description}"?
+5. Overall verdict: Is this a genuine matching report or a fake/mismatched submission?
+
+Return a JSON object with:
+{
+  "category": One of ["Potholes", "Garbage Overflow", "Road Damage", "Broken Streetlight", "Water Leakage", "Drainage Problem", "Public Facility Damage", "Other"],
+  "priority": One of ["Emergency", "High", "Normal"],
+  "severityScore": number 1-10 (10 = most severe),
+  "summary": "1-sentence summary explaining your verdict",
+  "isLikelyFake": boolean (TRUE if image does not match description/heading, or image is unrelated/irrelevant),
+  "fakeReason": "string explaining WHY it is fake (e.g., 'Image shows a dog but description says pothole') or 'Genuine report - image matches description' if real",
+  "imageDescription": "objective description of what the image ACTUALLY shows",
+  "imageTextMatch": boolean (true ONLY if the image content genuinely matches BOTH the heading AND description),
+  "imageTextCoherenceScore": number 0-100 (100 = perfect match, 0 = completely unrelated. Score below 40 = definite mismatch),
+  "imageAnalysis": {
+    "showsCivicIssue": boolean (does the image show ANY civic issue at all?),
+    "issueType": "what type of civic issue the image shows, or 'none/unrelated' if not a civic issue",
+    "matchesHeading": boolean (does the image match the category heading?),
+    "matchesDescription": boolean (does the image match what the text description says?),
+    "condition": "description of the condition shown in the image"
+  }
+}
+
+BE VERY STRICT. When in doubt, flag as fake. Real civic reports will have clear, matching images.
+ONLY return the JSON object, nothing else.`;
+    } else {
+      prompt = `Analyze this civic issue report (no image provided).
+Description: "${description}"
+Category: "${category || 'Not specified'}"
 
 Return a JSON object with:
 {
@@ -71,29 +148,8 @@ Return a JSON object with:
   "priority": One of ["Emergency", "High", "Normal"],
   "severityScore": number 1-10 (10 = most severe),
   "summary": "1-sentence concise summary of the issue",
-  "isLikelyFake": boolean (true if description is nonsensical, obviously fake, or image doesn't match at all),
-  "imageDescription": "brief description of what the image shows",
-  "imageTextMatch": boolean (true if the image content matches the description),
-  "imageTextCoherenceScore": number 0-100 (how well image matches description),
-  "imageAnalysis": {
-    "showsCivicIssue": boolean,
-    "issueType": "what type of civic issue the image shows, or 'none' if not a civic issue",
-    "condition": "description of the condition shown in the image"
-  }
-}
-
-ONLY return the JSON object, nothing else.`;
-    } else {
-      prompt = `Analyze this civic issue report.
-Description: "${description}"
-
-Return a JSON object with:
-{
-  "category": One of ["Roads", "Sanitation", "Drainage", "Electricity", "Water Supply", "Public Safety", "Other"],
-  "priority": One of ["Emergency", "High", "Normal"],
-  "severityScore": number 1-10 (10 = most severe),
-  "summary": "1-sentence concise summary of the issue",
   "isLikelyFake": boolean (true if description is nonsensical or obviously fake),
+  "fakeReason": "reason if fake, or 'Text-only report appears genuine' if real",
   "imageDescription": null,
   "imageTextMatch": null,
   "imageTextCoherenceScore": null,
@@ -106,17 +162,9 @@ ONLY return the JSON object, nothing else.`;
     const parts: any[] = [{ text: prompt }];
     parts.push(...buildImageParts(imageUrl));
 
-    const result = await genAI.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: [
-        {
-          role: "user",
-          parts: parts
-        }
-      ]
-    });
+    const text = await callGeminiWithRetry(parts);
 
-    const text = result.text;
+
     
     // Clean up response (Gemini sometimes adds markdown blocks)
     const jsonStr = text.replace(/```json|```/g, "").trim();
@@ -145,27 +193,40 @@ export async function analyzeIssueDeep(description: string, imageUrl?: string, c
 
     // 2. AI-powered deep analysis with Gemini
     const hasImage = !!imageUrl;
-    const prompt = `You are a civic infrastructure complaint analysis system with advanced NLP and computer vision capabilities.
+    const prompt = `You are a STRICT civic infrastructure complaint verification system with advanced NLP and computer vision capabilities.
 
 REPORT:
 - Description: "${description}"
-- Claimed Category: "${category || 'Not specified'}"
+- Claimed Category/Heading: "${category || 'Not specified'}"
 - Has Image: ${hasImage ? 'YES - Analyze the attached image carefully' : 'NO'}
 
-${hasImage ? `CRITICAL: You MUST analyze the provided image and determine:
-- What does the image actually show?
-- Does the image show a real civic infrastructure issue?
-- Does the image content match the text description?
-- Is this a stock photo, AI-generated image, or a real photograph?
-- Could this image have been taken from the internet rather than at the actual location?` : ''}
+${hasImage ? `CRITICAL IMAGE-TEXT MATCHING RULES:
+You MUST analyze the provided image and determine if it matches the description AND category heading.
+
+FAKE DETECTION RULES (BE VERY STRICT):
+1. The image MUST visually depict the EXACT type of civic issue described in the heading AND description.
+2. If the category says "Potholes" but the image shows a dog, selfie, food, meme → isFake = true, imageTextCoherence.score = 0
+3. If the category says "Garbage Overflow" but the image shows a clean street → isFake = true
+4. If the image shows a DIFFERENT civic issue than described (e.g., heading says "Water Leakage" but image shows potholes) → isFake = true, score < 30
+5. UNRELATED images are ALWAYS fake regardless of description:
+   - Selfies, portraits, people posing casually
+   - Food, drinks, restaurant photos
+   - Animals, pets
+   - Memes, cartoons, screenshots
+   - Random scenic photos without civic issues
+   - Product advertisements
+   - Home interiors (unless showing actual damage/leakage)
+   - Stock photos or AI-generated images
+6. The image must look like a real on-site photo of the described problem.
+7. ANY mismatch between image content and description/heading = FAKE.` : 'No image provided — analyze text only for fake patterns.'}
 
 Perform the following comprehensive analyses and return a JSON object:
 
 {
   "fakeDetection": {
-    "isFake": boolean,
-    "confidence": number (0-100),
-    "reasons": string[] (list of reasons if fake),
+    "isFake": boolean (TRUE if image doesn't match description/heading, image is unrelated, or text is nonsensical),
+    "confidence": number (0-100, how confident you are in your fake/genuine verdict),
+    "reasons": string[] (list of specific reasons if fake, e.g., "Image shows a cat but description says pothole"),
     "redFlags": string[] (any suspicious patterns detected)
   },
   "sentimentAnalysis": {
@@ -176,7 +237,7 @@ Perform the following comprehensive analyses and return a JSON object:
   },
   "categoryAnalysis": {
     "suggestedCategory": string (one of: Potholes, Garbage Overflow, Road Damage, Broken Streetlight, Water Leakage, Drainage Problem, Public Facility Damage, Other),
-    "categoryMatch": boolean (does description match claimed category?),
+    "categoryMatch": boolean (does description AND image match claimed category?),
     "keywords": string[] (key issue-related words found),
     "department": string (suggested department)
   },
@@ -189,28 +250,28 @@ Perform the following comprehensive analyses and return a JSON object:
     "grammarScore": number (0-100)
   },
   "imageTextCoherence": {
-    "score": number (0-100, how well does description match what the image shows),
-    "imageDescription": string (what the image actually shows),
-    "mismatchDetails": string (explain any mismatch),
-    "showsCivicIssue": boolean,
+    "score": number (0-100. 0 = completely unrelated image. Below 40 = mismatch. Above 70 = good match. 100 = perfect match),
+    "imageDescription": string (what the image ACTUALLY shows - be objective),
+    "mismatchDetails": string (explain specifically what doesn't match, e.g., "Description says pothole but image shows a sunset"),
+    "showsCivicIssue": boolean (does the image show ANY civic infrastructure issue?),
+    "matchesHeading": boolean (does the image match the category heading?),
+    "matchesDescription": boolean (does the image match the text description?),
     "isStockPhoto": boolean (does this look like a stock/internet photo?),
     "isAIGenerated": boolean (does this look AI generated?)
   },
-  "summary": string (1-2 sentence analysis summary),
-  "overallTrustScore": number (0-100, combined trust score considering ALL factors including image analysis)
+  "summary": string (1-2 sentence summary explaining your verdict clearly),
+  "overallTrustScore": number (0-100. If image doesn't match description, this MUST be below 30)
 }
 
-ONLY return the JSON object, nothing else. Be very strict about fake detection.`;
+BE EXTREMELY STRICT about image-text matching. When in doubt, flag as fake.
+ONLY return the JSON object, nothing else.`;
 
     const parts: any[] = [{ text: prompt }];
     parts.push(...buildImageParts(imageUrl));
 
-    const result = await genAI.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: [{ role: "user", parts }]
-    });
+    const text = await callGeminiWithRetry(parts);
 
-    const text = result.text;
+
     const jsonStr = text.replace(/```json|```/g, "").trim();
     const aiAnalysis = JSON.parse(jsonStr);
     

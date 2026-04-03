@@ -1867,10 +1867,15 @@ const ReportForm = ({ user, onSuccess }: any) => {
           prabhag: '17'
         });
         setImage(null);
-        if (data.isDuplicate) {
+        
+        // Show appropriate feedback based on AI analysis
+        if (data?.aiAnalysis?.isFake) {
+          const reason = data.aiAnalysis.fakeReason || 'The uploaded image does not match your description/category';
+          alert(`⚠️ Report Flagged as Fake\n\nYour report has been flagged because the AI detected a mismatch between your image and description.\n\nReason: ${reason}\n\nPlease ensure your uploaded photo matches what you are describing. Repeated fake submissions may result in account suspension.`);
+        } else if (data.isDuplicate) {
           alert('Issue reported! Note: AI detected this might be a duplicate of a nearby issue. We have linked them for faster resolution.');
         } else {
-          alert('Issue reported successfully!');
+          alert('✅ Issue reported successfully! AI verified your image matches the description.');
         }
         if (onSuccess) onSuccess();
       } else {

@@ -273,8 +273,8 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
   try {
     const { category, description, imageUrl, locationAddress, latitude, longitude, priority, division, prabhag } = req.body;
     
-    // AI Analysis with image + text coherence
-    const aiResult = await analyzeIssue(description, imageUrl);
+    // AI Analysis with image + text + heading coherence check
+    const aiResult = await analyzeIssue(description, imageUrl, category);
     const finalCategory = aiResult?.category || category || 'Other';
     const finalPriority = aiResult?.priority || priority || classifyPriority(finalCategory, description);
     const aiSummary = aiResult?.summary || '';
@@ -283,10 +283,18 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
     const imageDescription = aiResult?.imageDescription || null;
     const imageTextMatch = aiResult?.imageTextMatch ?? null;
     const imageTextCoherenceScore = aiResult?.imageTextCoherenceScore ?? null;
+    const fakeReason = aiResult?.fakeReason || null;
 
-    // Fake detection: flag if AI says fake OR if image analysis found mismatch
+    // STRICT Fake detection: flag if AI says fake OR if image doesn't match heading/description
     const hasImageAnalysis = imageTextCoherenceScore !== null && imageTextCoherenceScore !== undefined;
-    const isFake = (aiResult?.isLikelyFake || (hasImageAnalysis && imageTextCoherenceScore < 30) || (imageTextMatch === false && hasImageAnalysis)) ? 1 : 0;
+    const aiSaysFake = aiResult?.isLikelyFake === true;
+    const imageMismatch = imageTextMatch === false && hasImageAnalysis;
+    const lowCoherence = hasImageAnalysis && imageTextCoherenceScore < 40;
+    const imageNotCivic = aiResult?.imageAnalysis?.showsCivicIssue === false;
+    const headingMismatch = aiResult?.imageAnalysis?.matchesHeading === false;
+    const descriptionMismatch = aiResult?.imageAnalysis?.matchesDescription === false;
+    
+    const isFake = (aiSaysFake || imageMismatch || lowCoherence || imageNotCivic || headingMismatch || descriptionMismatch) ? 1 : 0;
 
     const id = Math.random().toString(36).substr(2, 9);
     
@@ -306,7 +314,7 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
     // Routing
     let assignedTeam = undefined;
     let status = 'Pending';
-    if (!isDuplicate) {
+    if (!isDuplicate && !isFake) {
       const catLower = finalCategory.toLowerCase();
       if (catLower.includes('sanitation') || catLower.includes('garbage')) {
         assignedTeam = 'team-001';
@@ -322,18 +330,23 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
       }
     }
 
+    // If flagged as fake, set status to Closed
+    if (isFake) {
+      status = 'Closed';
+    }
+
     await (Issue as any).create({
       id, userId: req.user.id, username: req.user.username, userEmail: req.user.email,
       category: finalCategory, description, imageUrl, locationAddress, latitude, longitude,
       priority: finalPriority, status, division, prabhag, isDuplicate, duplicateOf,
-      isFake, adminNotes: aiSummary,
+      isFake, adminNotes: isFake ? `⚠️ FAKE DETECTED: ${fakeReason || aiSummary}` : aiSummary,
       timestamp: new Date().toISOString(), assignedTeam,
       imageDescription, imageTextMatch, imageTextCoherenceScore,
       aiAnalysis: aiResult || null,
-      overallTrustScore: aiResult?.severityScore ? (aiResult.isLikelyFake ? 20 : 80) : null
+      overallTrustScore: aiResult?.severityScore ? (isFake ? 10 : 80) : null
     });
 
-    await (User as any).updateOne({ id: req.user.id }, { $inc: { reputationPoints: 10, reportedIssuesCount: 1 } });
+    await (User as any).updateOne({ id: req.user.id }, { $inc: { reputationPoints: isFake ? -5 : 10, reportedIssuesCount: 1 } });
 
     // Send Notifications
     if (!isFake && !isDuplicate) {
@@ -341,16 +354,34 @@ app.post('/api/reportIssue', authenticateToken, async (req: any, res) => {
         await sendNotification(assignedTeam, 'New Task Assigned', `A new ${finalCategory} issue has been assigned to your team.`, id);
       }
       await sendNotification('admin', 'New Civic Issue', `A new ${finalPriority} priority issue has been reported in ${finalCategory}.`, id);
+    } else if (isFake) {
+      // Notify admin about fake report
+      await sendNotification('admin', '⚠️ Fake Report Detected', `AI detected a fake report from ${req.user.username}: ${fakeReason || 'Image does not match description/heading'}. Issue #${id} auto-closed.`, id);
+      // Notify the user
+      await sendNotification(req.user.id, 'Report Flagged as Fake', `Your report was flagged because the uploaded image does not match your description. Reason: ${fakeReason || 'Image-text mismatch'}`, id);
+      // Check if user should be blocked (3+ fake reports)
+      const fakeCount = await (Issue as any).countDocuments({ userId: req.user.id, isFake: { $gte: 1 } });
+      if (fakeCount >= 3) {
+        await (User as any).updateOne({ id: req.user.id }, { isBlocked: 1 });
+        await sendNotification('admin', 'User Auto-Blocked', `User ${req.user.username} has been blocked after ${fakeCount} fake reports.`, id);
+      }
     } else if (isDuplicate) {
       await sendNotification(req.user.id, 'Duplicate Report', `Your report has been marked as a duplicate of issue #${duplicateOf}.`, id);
     }
 
-    // If image didn't match description, also notify admin
+    // If image didn't match description, also notify admin with details
     if (imageTextMatch === false && !isFake) {
       await sendNotification('admin', 'Image-Text Mismatch', `Issue #${id}: The uploaded image does not match the description. AI says image shows: "${imageDescription || 'unknown'}". Needs manual review.`, id);
     }
 
-    res.json({ success: true, id, status, aiAnalysis: { category: finalCategory, priority: finalPriority, isFake: !!isFake, imageTextMatch, imageDescription } });
+    res.json({ 
+      success: true, id, status, 
+      aiAnalysis: { 
+        category: finalCategory, priority: finalPriority, 
+        isFake: !!isFake, fakeReason,
+        imageTextMatch, imageDescription, imageTextCoherenceScore 
+      } 
+    });
   } catch (err) {
     console.error("Report Error:", err);
     res.status(500).json({ error: 'Failed to report' });
