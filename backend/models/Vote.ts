@@ -10,4 +10,4 @@ const voteSchema = new mongoose.Schema({
   timestamp: { type: String }
 });
 
-export const Vote = mongoose.model('Vote', voteSchema);
+export const Vote = mongoose.models.Vote || mongoose.model('Vote', voteSchema);

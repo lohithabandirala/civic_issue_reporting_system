@@ -15,4 +15,4 @@ const userSchema = new mongoose.Schema({
   isBlocked: { type: Number, default: 0 }
 });
 
-export const User = mongoose.model('User', userSchema);
+export const User = mongoose.models.User || mongoose.model('User', userSchema);

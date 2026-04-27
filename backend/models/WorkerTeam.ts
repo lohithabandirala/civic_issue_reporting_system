@@ -7,4 +7,4 @@ const workerTeamSchema = new mongoose.Schema({
   activeTasks: { type: Number, default: 0 }
 });
 
-export const WorkerTeam = mongoose.model('WorkerTeam', workerTeamSchema);
+export const WorkerTeam = mongoose.models.WorkerTeam || mongoose.model('WorkerTeam', workerTeamSchema);

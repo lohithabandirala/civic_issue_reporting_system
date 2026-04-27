@@ -33,4 +33,4 @@ const issueSchema = new mongoose.Schema({
   userEmail: { type: String }
 });
 
-export const Issue = mongoose.model('Issue', issueSchema);
+export const Issue = mongoose.models.Issue || mongoose.model('Issue', issueSchema);
