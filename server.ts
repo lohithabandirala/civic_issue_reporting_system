@@ -10,13 +10,13 @@ import dotenv from 'dotenv';
 import multer from 'multer';
 
 // Import Models
-import { User } from './backend/models/User';
-import { Issue } from './backend/models/Issue';
-import { WorkerTeam } from './backend/models/WorkerTeam';
-import { Vote } from './backend/models/Vote';
-import { Notification } from './backend/models/Notification';
-import { analyzeIssue } from './backend/services/ai';
-import { sendNotification } from './backend/services/notification';
+import { User } from './backend/models/User.js';
+import { Issue } from './backend/models/Issue.js';
+import { WorkerTeam } from './backend/models/WorkerTeam.js';
+import { Vote } from './backend/models/Vote.js';
+import { Notification } from './backend/models/Notification.js';
+import { analyzeIssue } from './backend/services/ai.js';
+import { sendNotification } from './backend/services/notification.js';
 
 import os from 'os';
 

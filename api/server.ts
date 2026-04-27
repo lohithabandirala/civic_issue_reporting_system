@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -10,13 +9,13 @@ import dotenv from 'dotenv';
 import multer from 'multer';
 
 // Import Models (adjusted paths for api/ folder)
-import { User } from '../backend/models/User';
-import { Issue } from '../backend/models/Issue';
-import { WorkerTeam } from '../backend/models/WorkerTeam';
-import { Vote } from '../backend/models/Vote';
-import { Notification } from '../backend/models/Notification';
-import { analyzeIssue } from '../backend/services/ai';
-import { sendNotification } from '../backend/services/notification';
+import { User } from '../backend/models/User.js';
+import { Issue } from '../backend/models/Issue.js';
+import { WorkerTeam } from '../backend/models/WorkerTeam.js';
+import { Vote } from '../backend/models/Vote.js';
+import { Notification } from '../backend/models/Notification.js';
+import { analyzeIssue } from '../backend/services/ai.js';
+import { sendNotification } from '../backend/services/notification.js';
 
 import os from 'os';
 
@@ -281,25 +280,5 @@ app.get('/api/public/stats', async (req, res) => {
   res.json({ total, resolved, inProgress, pending });
 });
 
-// Fallback for SPA
 // Export the app for Vercel
 export default app;
-
-async function startServer() {
-  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
-    app.use(vite.middlewares);
-  } else if (!process.env.VERCEL) {
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
-  }
-
-  if (!process.env.VERCEL) {
-    app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
-  }
-}
-
-// Start server only if not on Vercel and not being imported as a module
-if (!process.env.VERCEL) {
-  startServer();
-}

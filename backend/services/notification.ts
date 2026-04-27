@@ -1,4 +1,4 @@
-import { Notification } from '../models/Notification';
+import { Notification } from '../models/Notification.js';
 
 export async function sendNotification(recipient: string, title: string, message: string, issueId?: string) {
   try {
