@@ -24,7 +24,9 @@ import {
   MessageSquare,
   ThumbsDown,
   Search,
-  BarChart3 as AnalyticsIcon
+  BarChart3 as AnalyticsIcon,
+  ArrowRight,
+  Building2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 'react-leaflet';
@@ -284,8 +286,8 @@ export default function App({ forcePortal }: { forcePortal?: 'user' | 'admin' } 
     const isAdminPortal = forcePortal === 'admin';
     return (
       <AuthScreen
-        isLoginView={view !== 'register'} 
-        toggleView={() => setView(view === 'register' ? 'auth' : 'register')}
+        isLoginView={true} 
+        toggleView={() => setView('register')}
         onBack={() => navigate('/')}
         forcedPortal={forcePortal}
       />

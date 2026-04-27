@@ -10,3 +10,5 @@ uploads/
 civic.db
 *.bak
 rewrite.py
+.vercel
+.env*.local
